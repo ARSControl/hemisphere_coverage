@@ -1,0 +1,24 @@
+hemisphere_coverage:
+  ros__parameters:
+    uav_type: "qx1"
+    simulation: true
+    uav_name: "uav1" # declared as empty but passed and rewritten from env variable in launch file
+    uav_id: 3
+    minimum_distance: 3.0
+    target_distance: 3.0
+    velocity_control: true
+    geometric_cov: true
+    vel_control:
+      k_gain_x: 0.4
+      k_gain_y: 0.4
+      k_gain_z: 0.4
+    pid_yaw:
+      kp: 0.25
+      ki: 0.000
+      kd: 0.001
+      max: 0.4
+      min: -0.4
+    hemi:
+      cx: 0.0
+      cy: 0.0
+      cz: 0.0

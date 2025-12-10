@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+    <name>hemisphere_coverage</name>
+    <version>1.0.0</version>
+    <description>Package description here</description>
+
+    <author email="mehdi.belal@tii.ae">Mehdi Belal</author>
+    <maintainer email="mehdi.belal@tii.ae">Mehdi Belal</maintainer>
+
+    <license>Apache 2.0</license>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+
+    <depend>rclcpp</depend>
+    <depend>std_srvs</depend>
+
+    <depend>geometry_msgs</depend>
+    <depend>nav_msgs</depend>
+    <depend>tf2_ros</depend>
+    <depend>tf2_geometry_msgs</depend>
+    <depend>hemisphere_interfaces</depend>
+    <depend>libglm-dev</depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>a
+    </export>
+
+</package>
