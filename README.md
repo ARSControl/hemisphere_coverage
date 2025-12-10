@@ -1,40 +1,61 @@
 # Hemisphere Coverage
 
-A ROS 2 node that computes hemisphere coverage destinations for a multi-UAV team. It subscribes to local and neighbor odometry, runs the spherical Voronoi-based coverage algorithm, and publishes **PX4-compatible velocity commands** for Offboard flight control.
+Hemisphere Coverage is a ROS 2 package implementing **hemispherical coverage control** for teams of multirotors using **spherical Voronoi partitioning**, **geodesic motion**, and optional **Gaussian density weighting**.  
+The node computes optimal viewpoints on a hemisphere and commands a swarm of PX4-controlled UAVs through ROS 2 Offboard velocity setpoints.
 
-The node integrates seamlessly with PX4 through `geometry_msgs/TwistStamped` velocity messages routed to PX4’s Offboard setpoint topics.
+This framework supports **real-time multi-UAV coordination**. Robots autonomously distribute themselves over a hemispherical surface, enabling applications such as surveillance, inspection, environmental monitoring, and distributed sensing.
+
+---
+
+## Methodology Overview
+
+The coverage computation relies on a **spherical Voronoi diagram**, generated through an adaptation of **Fortune’s sweep-line algorithm** to a spherical surface.  
+This provides an overall **O(n log n)** complexity for Voronoi region generation, ensuring scalability as the number of UAVs increases.
+
+The Voronoi implementation is conceptually inspired by the approach described here:  
+https://whenitsdone.org/2014/07/29/map-generation-on-spherical-planet-part-i/
+
+---
+
+## What This Package Does
+
+### Hemispherical Coverage Control
+Each drone is assigned a region on the hemisphere via the spherical Voronoi diagram and moves along geodesics toward its region centroid, ensuring optimal viewpoint distribution.
+
+### PX4-Integrated Swarm Control
+The package publishes **PX4-compatible velocity commands** (`geometry_msgs/TwistStamped`) to drive multiple drones in Offboard mode.
+
+### Gaussian-Weighted Coverage
+In addition to uniform coverage, the system can bias drone distribution using a **Gaussian density model**, causing agents to converge toward areas of higher importance on the hemisphere.
+
+---
+
+## Example Simulation
+
+The following figure illustrates both uniform and Gaussian-biased coverage simulations:
+
+![Simulation Trajectories](media/image_1.png)
 
 ---
 
 ## Requirements
 
-- ROS 2 (tested with Humble)
-- Dependencies from `package.xml`:
-  - `rclcpp`, `geometry_msgs`, `nav_msgs`, `tf2_ros`, `tf2_geometry_msgs`, `std_srvs`
-  - `hemisphere_interfaces` (Gaussian services, MissionState msg)
-  - **`px4_msgs`** (required for PX4 Offboard interface compatibility)
-  - Eigen3 (header-only)
-- C++17 toolchain
+- ROS 2 (tested on Humble)
+- Dependencies:  
+  `rclcpp`, `nav_msgs`, `geometry_msgs`, `tf2_*`, `std_srvs`, `px4_msgs`, `hemisphere_interfaces`, Eigen3  
+- C++17 compiler
 
 ---
 
-## PX4 Integration
+## PX4 Integration (Offboard)
 
-This package is designed to interface with PX4 via the standard ROS 2 → PX4 Offboard bridge.
+This package integrates with PX4 through the ROS 2–PX4 Offboard bridge.
 
-### Published control messages
-- **`geometry_msgs/TwistStamped`**
-  Published on:
-  `/<uav_name>/command/setVelocityAcceleration`
-  → Mapped to PX4 Offboard velocity setpoints (`VehicleLocalPositionSetpoint`).
+### Published Setpoints
+- `/<uav_name>/command/setVelocityAcceleration` → primary Offboard velocity control  
+- `/<uav_name>/command/setPose` → optional pose reference  
 
-- **`geometry_msgs/PoseStamped`**
-  Optional position/pose reference if required.
-
-### Notes
-- The node does **not** publish PX4 messages directly.
-- It uses ROS geometry messages which are translated by the PX4 bridge.
-- Setting `velocity_control := true` activates velocity-based control.
+The node emits standard ROS 2 geometry messages, which PX4 consumes through its Offboard interface.
 
 ---
 
@@ -50,86 +71,69 @@ source install/setup.bash
 
 ## Configuration
 
-- Default config file: `config/hemisphere_config.yaml`
-- Coverage tuning: `config/coverage_geometric.json`
+Default configuration: `config/hemisphere_config.yaml`  
+Geometric tuning: `config/coverage_geometric.json`
 
-### Key Parameters (under the node namespace)
+### Key Parameters
 
-| Parameter | Type | Description |
-|----------|------|-------------|
-| `uav_name` | string | Vehicle namespace, default `Drone1` |
-| `uav_id` | int | Numeric ID |
-| `simulation` | bool | Use sim time |
-| `velocity_control` | bool | Enable PX4-compatible velocity control |
-| `geometric` | bool | Use geometric or gaussian distribution |
-| `neighbors` | int | Number of neighbor odometry topics |
-| `gaussian` | array[4] | Gaussian x,y,z center + variance |
-| `vel_control.k_gain_{x,y,z}` | double | Position → velocity gains |
-| `hemi.cx, cy, cz` | double | Hemisphere center |
-| `pid_yaw.kp, ki, kd, max, min` | double | Yaw PID parameters |
+| Parameter | Description |
+|----------|-------------|
+| `uav_name` | UAV namespace (e.g., Drone1) |
+| `uav_id` | Numeric drone ID |
+| `neighbors` | Number of neighbor odometry topics |
+| `geometric` | Enables uniform hemisphere coverage |
+| `gaussian` | `[x, y, z, sigma]` parameters for Gaussian density bias |
+| `velocity_control` | Enables PX4 velocity Offboard mode |
+| `pid_yaw.*` | Yaw controller parameters |
+| `hemi.cx, cy, cz` | Hemisphere center coordinates |
 
 ---
 
-## Runtime Usage
-
-```bash
-ros2 launch hemisphere_coverage hemisphere_coverage.launch.py \
-  uav_name:=Drone1 \
-  uav_id:=1 \
-  neighbors:=10 \
-  geometric:=1 \
-  gaussian:="[1.0,1.0,1.0,0.5]" \
-  radius:=10.0 \
-  simulation:=true \
-  use_sim_time:=true
-```
-
----
-
-## Node I/O
+## Node Interfaces
 
 ### Subscriptions
+- UAV odometry  
+- Neighbor UAV odometry  
+- Gaussian parameters  
+- Hemisphere center/angles  
+- Mission/state commands  
 
-- `/<uav_name>/odometry` (`nav_msgs/Odometry`) — self odometry
-- `/<uav_name>/center` (`geometry_msgs/Point`) — hemisphere center updates
-- `/<uav_name>/angles` (`geometry_msgs/Point`) — hemisphere angle updates
-- `/command` (`std_msgs/Int32`) — basic command interface
-- `/neighbors_states` (`hemisphere_interfaces/MissionState`) — neighbors’ mission state
-- `/DroneX/odometry` (`nav_msgs/Odometry`) — neighbor odometry for `X ∈ [1..neighbors]`
-- `/DroneX/current_state` (`std_msgs/Int32`) — neighbor state
-
-### Publications (PX4-related)
-
-- `/<uav_name>/command/setVelocityAcceleration`  
-  → **`geometry_msgs/TwistStamped`**  
-  → Main Offboard velocity setpoint consumed by PX4.
-
-- `/<uav_name>/command/setPose`  
-  → `geometry_msgs/PoseStamped`
-
-- `/<uav_name>/current_state` (`std_msgs/Int32`)
+### Publications
+- Velocity setpoints for PX4 Offboard mode  
+- Pose setpoints  
+- UAV mission/coverage state  
 
 ### Services
-
-- `/<uav_name>/setGaussian` (`hemisphere_interfaces/srv/Gaussian`)
+- `/<uav_name>/setGaussian` — updates the Gaussian density model  
 
 ---
 
-## Components
+## Software Components
 
 - **hemisphere_coverage node**  
-  ROS 2 interface, PX4-compatible command loop, parameter handling.
+  ROS 2 interface, PX4 Offboard control loop, parameter handling.
 
 - **Coverage core**  
-  `src/hemisphere_core.cpp`, `include/hemisphere_core.hpp`: Spherical Voronoi logic.
+  Spherical Voronoi construction, centroid computation (geometric and Gaussian-weighted), geodesic motion generation.
 
 - **Configuration assets**  
-  YAML + JSON files for runtime tuning.
+  YAML/JSON files for runtime tuning.
 
 ---
 
-## Notes
+## Project Scope
 
-- The node currently operates in hemisphere-only mode.
-- Ensure neighbor topics exist up to `neighbors` or lower the parameter.
-- Velocity commands are designed to plug directly into a PX4 Offboard pipeline.
+This package contributes to a broader research effort involving:
+- Multi-agent hemispherical coverage  
+- Distributed control and optimization  
+- Swarm robotics with PX4-based aerial vehicles  
+- Density-biased view planning via Gaussian fields  
+- Real-time control architectures for UAV teams  
+
+The methodology has been validated in simulation and is compatible with real PX4 platforms.
+
+---
+
+## License
+
+This repository is provided for research and development purposes.
