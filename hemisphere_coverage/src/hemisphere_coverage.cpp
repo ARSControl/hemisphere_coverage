@@ -110,9 +110,9 @@ namespace hemisphere
 
     void HemisphereCoverage::init_algorithm()
     {
-
-
+        coverage = std::make_shared<HemishpereCoverageSweep>(drone_id, "");
         hemisphere::coverage::DistributionType type = geometric_coverage ? hemisphere::coverage::DistributionType::DISTRIBUTION_GEOMETRICAL : hemisphere::coverage::DistributionType::DISTRIBUTION_GAUSSIAN;
+        coverage->setAngles(hemi_angles);
         coverage->setup(radius, type, gaussian_vec, 0.0, hemi_center);
     }
 
@@ -200,6 +200,9 @@ namespace hemisphere
         msg_status.data = static_cast<int32_t>(current_state);
         pub_state->publish(msg_status);
 
+        if (coverage == nullptr || odometry == nullptr) {
+            return;
+        }
 
         current_destination = coverage->do_hemisphereCoverage(odometry, neighbors_map);
         

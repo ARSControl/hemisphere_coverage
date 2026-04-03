@@ -19,14 +19,12 @@ def generate_launch_description():
     # 2. Read environment variables for UAV name, ID, run_type, etc.
     # ------------------------------------------------------------
     uav_name = EnvironmentVariable('UAV_NAME')
-    run_type = EnvironmentVariable('RUN_TYPE')
     uav_id = EnvironmentVariable('UAV_ID')
     uav_name_param = LaunchConfiguration('uav_name', default=uav_name)
     uav_id_param = LaunchConfiguration('uav_id', default=uav_id)
 
     # ------------------------------------------------------------
     # 3. Decide if we are in simulation mode (default to true, override via arg)
-    sim = LaunchConfiguration('simulation', default='true')
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
 
     # ------------------------------------------------------------
@@ -100,6 +98,8 @@ def generate_launch_description():
             params_file,
             {
                 'use_sim_time': use_sim_time_cfg,
+                'uav_name': uav_name_param,
+                'uav_id': uav_id_param,
                 'deployment': deployment,
                 'radius': radius,
                 'neighbors': neighbors,
@@ -117,7 +117,6 @@ def generate_launch_description():
     ld.add_action(deployment_arg)
     ld.add_action(radius_arg)
     ld.add_action(neighbors_arg)
-    ld.add_action(type_arg)
     ld.add_action(geometric_arg)
     ld.add_action(gaussian_arg)
     ld.add_action(sim_arg)
