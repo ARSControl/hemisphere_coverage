@@ -8,6 +8,9 @@ hemisphere_coverage:
     target_distance: 3.0
     velocity_control: true
     takeoff_altitude: 5.0
+    landing_altitude: 5.0
+    land_retry_period_sec: 2.0
+    shutdown_landing_timeout_sec: 30.0
     geometric: 1
     vel_control:
       k_gain_x: 0.4

@@ -42,6 +42,9 @@ namespace hemisphere
         sru::declare_get_parameter<double>(*this, "radius", radius, 10.0);
         sru::declare_get_parameter<double>(*this, "takeoff_altitude", takeoff_altitude_, 5.0);
         sru::declare_get_parameter<double>(*this, "takeoff_retry_period_sec", takeoff_retry_period_sec_, 2.0);
+        sru::declare_get_parameter<double>(*this, "landing_altitude", landing_altitude_, 5.0);
+        sru::declare_get_parameter<double>(*this, "land_retry_period_sec", land_retry_period_sec_, 2.0);
+        sru::declare_get_parameter<double>(*this, "shutdown_landing_timeout_sec", shutdown_landing_timeout_sec_, 30.0);
         sru::declare_get_parameter<int>(*this, "geometric", geometric_val, 1);
         sru::declare_get_parameter<int>(*this, "neighbors", neighbors_val, 10);
         sru::declare_get_parameter<std::vector<double>>(*this, "gaussian", gaussian_val, {1.0, 1.0, 1.0, 0.5});
@@ -100,6 +103,7 @@ namespace hemisphere
         pub_vel_acc                 = this->create_publisher<geometry_msgs::msg::TwistStamped>("/" + uav_name + "/command/setVelocityAcceleration", 10);
         pub_pose                    = this->create_publisher<geometry_msgs::msg::PoseStamped>("/" + uav_name + "/command/setPose", 1);
         pub_state                   = this->create_publisher<std_msgs::msg::Int32>("/" + uav_name + "/current_state", 1);
+        land_client_                = rclcpp_action::create_client<Land>(this, "land_action");
         takeoff_client_             = rclcpp_action::create_client<Takeoff>(this, "takeoff_action");
 
         // Timer
@@ -226,6 +230,11 @@ namespace hemisphere
         msg_status.data = static_cast<int32_t>(current_state);
         pub_state->publish(msg_status);
 
+        if (shutdown_requested_) {
+            start_landing();
+            return;
+        }
+
         if (!takeoff_completed_) {
             start_takeoff();
             return;
@@ -259,6 +268,36 @@ namespace hemisphere
             auto yaw_err = normalize_angle(normalize_angle(_desired_angle) - normalize_angle(yaw));
             publish_velocity(current_destination->x, current_destination->y, current_destination->z, yaw_err);
         }
+    }
+
+    void HemisphereCoverage::request_shutdown_sequence()
+    {
+        if (shutdown_requested_) {
+            return;
+        }
+
+        shutdown_requested_ = true;
+        current_state = StateMachine::INIT;
+        RCLCPP_INFO(get_logger(), "Shutdown requested, stopping coverage pipeline and initiating landing");
+
+        const bool airborne = odometry != nullptr && odometry->pose.pose.position.z > 0.5;
+        if (!takeoff_completed_ && !airborne) {
+            shutdown_sequence_complete_ = true;
+            RCLCPP_INFO(get_logger(), "Shutdown requested before takeoff completed, skipping landing");
+            return;
+        }
+
+        start_landing();
+    }
+
+    bool HemisphereCoverage::shutdown_sequence_complete() const
+    {
+        return shutdown_sequence_complete_;
+    }
+
+    double HemisphereCoverage::shutdown_landing_timeout_sec() const
+    {
+        return shutdown_landing_timeout_sec_;
     }
 
     void HemisphereCoverage::publish_velocity(double pos_x, double pos_y, double pos_z, double pos_yaw)
@@ -322,6 +361,82 @@ namespace hemisphere
         last_takeoff_attempt_time_ = now;
         RCLCPP_INFO(get_logger(), "Sending takeoff goal to %.2f m", takeoff_altitude_);
         takeoff_client_->async_send_goal(goal, options);
+    }
+
+    void HemisphereCoverage::start_landing()
+    {
+        if (shutdown_sequence_complete_ || land_goal_sent_) {
+            return;
+        }
+
+        const auto now = this->get_clock()->now();
+        if (last_land_attempt_time_.nanoseconds() > 0 &&
+            (now - last_land_attempt_time_).seconds() < land_retry_period_sec_) {
+            return;
+        }
+
+        if (!land_client_->action_server_is_ready()) {
+            RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Waiting for land_action server in namespace %s",
+                    get_namespace());
+            return;
+        }
+
+        auto goal = Land::Goal();
+        goal.landing_altitude = landing_altitude_;
+        goal.vtol_transition_heading = 0.0;
+
+        rclcpp_action::Client<Land>::SendGoalOptions options;
+        options.goal_response_callback = std::bind(&HemisphereCoverage::handle_landing_goal_response, this, std::placeholders::_1);
+        options.result_callback = std::bind(&HemisphereCoverage::handle_landing_result, this, std::placeholders::_1);
+
+        land_goal_sent_ = true;
+        land_goal_accepted_ = false;
+        last_land_attempt_time_ = now;
+        RCLCPP_INFO(get_logger(), "Sending landing goal with landing altitude %.2f m", landing_altitude_);
+        land_client_->async_send_goal(goal, options);
+    }
+
+    void HemisphereCoverage::handle_landing_goal_response(const LandGoalHandle::SharedPtr & goal_handle)
+    {
+        if (!goal_handle) {
+            land_goal_sent_ = false;
+            land_goal_accepted_ = false;
+            RCLCPP_WARN(get_logger(), "Landing goal was rejected, will retry");
+            return;
+        }
+
+        land_goal_accepted_ = true;
+        RCLCPP_INFO(get_logger(), "Landing goal accepted");
+    }
+
+    void HemisphereCoverage::handle_landing_result(const LandGoalHandle::WrappedResult & result)
+    {
+        switch (result.code) {
+            case rclcpp_action::ResultCode::SUCCEEDED:
+                shutdown_sequence_complete_ = true;
+                current_state = StateMachine::INIT;
+                RCLCPP_INFO(get_logger(), "Landing completed, shutdown can continue");
+                break;
+            case rclcpp_action::ResultCode::ABORTED:
+                land_goal_sent_ = false;
+                land_goal_accepted_ = false;
+                RCLCPP_WARN(get_logger(), "Landing aborted, will retry");
+                break;
+            case rclcpp_action::ResultCode::CANCELED:
+                land_goal_sent_ = false;
+                land_goal_accepted_ = false;
+                RCLCPP_WARN(get_logger(), "Landing canceled, will retry");
+                break;
+            default:
+                land_goal_sent_ = false;
+                land_goal_accepted_ = false;
+                RCLCPP_WARN(get_logger(), "Landing finished with unknown result, will retry");
+                break;
+        }
     }
 
     void HemisphereCoverage::handle_takeoff_goal_response(const TakeoffGoalHandle::SharedPtr & goal_handle)

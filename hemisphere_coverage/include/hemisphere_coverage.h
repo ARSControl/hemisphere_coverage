@@ -22,6 +22,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include "hemisphere_interfaces/msg/mission_state.hpp"
+#include "autopilot_interface_msgs/action/land.hpp"
 #include "autopilot_interface_msgs/action/takeoff.hpp"
 
 
@@ -48,10 +49,15 @@ namespace hemisphere
 class HemisphereCoverage : public rclcpp::Node
 {
     using gaussian_srv = hemisphere_interfaces::srv::Gaussian;
+    using Land = autopilot_interface_msgs::action::Land;
+    using LandGoalHandle = rclcpp_action::ClientGoalHandle<Land>;
     using Takeoff = autopilot_interface_msgs::action::Takeoff;
     using TakeoffGoalHandle = rclcpp_action::ClientGoalHandle<Takeoff>;
 public:
     HemisphereCoverage();
+    void request_shutdown_sequence();
+    bool shutdown_sequence_complete() const;
+    double shutdown_landing_timeout_sec() const;
 
 private:
     // Params
@@ -65,11 +71,18 @@ private:
     bool                velocity_control = true;
     bool                geometric_coverage = true;
     bool                hemisphere_coverage_bool = false;
+    bool                shutdown_requested_ = false;
+    bool                shutdown_sequence_complete_ = false;
     bool                takeoff_completed_ = false;
     bool                takeoff_goal_sent_ = false;
     bool                takeoff_goal_accepted_ = false;
+    bool                land_goal_sent_ = false;
+    bool                land_goal_accepted_ = false;
     double              takeoff_altitude_ = 5.0;
     double              takeoff_retry_period_sec_ = 2.0;
+    double              landing_altitude_ = 5.0;
+    double              land_retry_period_sec_ = 2.0;
+    double              shutdown_landing_timeout_sec_ = 30.0;
     double              k_gain_x = 1.0;
     double              k_gain_y = 1.0;
     double              k_gain_z = 1.0;
@@ -104,7 +117,9 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr              pub_vel_acc;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr               pub_pose;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr                          pub_state;
+    rclcpp_action::Client<Land>::SharedPtr                                      land_client_;
     rclcpp_action::Client<Takeoff>::SharedPtr                                   takeoff_client_;
+    rclcpp::Time                                                                 last_land_attempt_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time                                                                 last_takeoff_attempt_time_{0, 0, RCL_ROS_TIME};
     //timer
     rclcpp::TimerBase::SharedPtr                                                timer_main;
@@ -128,7 +143,10 @@ private:
     void callbackNeighborsStates(const hemisphere_interfaces::msg::MissionState::SharedPtr& msg);
     void callbackStates(int index, std_msgs::msg::Int32::SharedPtr msg);
     void discover_neighbor_odometry_topics();
+    void start_landing();
     void start_takeoff();
+    void handle_landing_goal_response(const LandGoalHandle::SharedPtr & goal_handle);
+    void handle_landing_result(const LandGoalHandle::WrappedResult & result);
     void handle_takeoff_goal_response(const TakeoffGoalHandle::SharedPtr & goal_handle);
     void handle_takeoff_result(const TakeoffGoalHandle::WrappedResult & result);
 
