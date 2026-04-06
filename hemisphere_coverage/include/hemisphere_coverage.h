@@ -8,7 +8,9 @@
 
 // ROS
 #include "utils/node_utils.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 // Tf
+#include "tf2/LinearMath/Quaternion.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 
@@ -18,7 +20,9 @@
 #include <std_msgs/msg/int32.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
 #include "hemisphere_interfaces/msg/mission_state.hpp"
+#include "autopilot_interface_msgs/action/takeoff.hpp"
 
 
 //Srv
@@ -30,6 +34,8 @@
 
 // Eigen
 #include <Eigen/Dense>
+#include <regex>
+#include <unordered_map>
 
 // node
 #include <utils/pid.hpp>
@@ -42,6 +48,8 @@ namespace hemisphere
 class HemisphereCoverage : public rclcpp::Node
 {
     using gaussian_srv = hemisphere_interfaces::srv::Gaussian;
+    using Takeoff = autopilot_interface_msgs::action::Takeoff;
+    using TakeoffGoalHandle = rclcpp_action::ClientGoalHandle<Takeoff>;
 public:
     HemisphereCoverage();
 
@@ -57,6 +65,11 @@ private:
     bool                velocity_control = true;
     bool                geometric_coverage = true;
     bool                hemisphere_coverage_bool = false;
+    bool                takeoff_completed_ = false;
+    bool                takeoff_goal_sent_ = false;
+    bool                takeoff_goal_accepted_ = false;
+    double              takeoff_altitude_ = 5.0;
+    double              takeoff_retry_period_sec_ = 2.0;
     double              k_gain_x = 1.0;
     double              k_gain_y = 1.0;
     double              k_gain_z = 1.0;
@@ -79,10 +92,11 @@ private:
     std::shared_ptr<geometry_msgs::msg::Point>  current_destination;
 
     // ROS Subscription
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                    sub_odom;
+    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr        sub_odom;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr                       sub_comm;
     rclcpp::Subscription<hemisphere_interfaces::msg::MissionState>::SharedPtr   sub_neighbors_states;
-    std::vector<rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr>       sub_neighbors;
+    std::vector<rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> sub_neighbors;
+    std::unordered_map<int, rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> discovered_neighbor_subscribers_;
     std::vector<rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr>          sub_states;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_center;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_angles;
@@ -90,8 +104,11 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr              pub_vel_acc;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr               pub_pose;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr                          pub_state;
+    rclcpp_action::Client<Takeoff>::SharedPtr                                   takeoff_client_;
+    rclcpp::Time                                                                 last_takeoff_attempt_time_{0, 0, RCL_ROS_TIME};
     //timer
     rclcpp::TimerBase::SharedPtr                                                timer_main;
+    rclcpp::TimerBase::SharedPtr                                                timer_discover_neighbors_;
     // Services
     rclcpp::Service<gaussian_srv>::SharedPtr                                    srv_gaussian;
 
@@ -103,19 +120,24 @@ private:
 
     // callbacks
     void main_timer();
-    void callbackOdometry(const nav_msgs::msg::Odometry::SharedPtr msg);
+    void callbackOdometry(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void callbackCommand(const std_msgs::msg::Int32::SharedPtr msg);
     void callbackCenterPosition(const geometry_msgs::msg::Point::SharedPtr msg);
     void callbackAnglesValues(const geometry_msgs::msg::Point::SharedPtr msg);
-    void callbackNeighbors(int index, nav_msgs::msg::Odometry::SharedPtr msg);
+    void callbackNeighbors(int index, px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void callbackNeighborsStates(const hemisphere_interfaces::msg::MissionState::SharedPtr& msg);
     void callbackStates(int index, std_msgs::msg::Int32::SharedPtr msg);
+    void discover_neighbor_odometry_topics();
+    void start_takeoff();
+    void handle_takeoff_goal_response(const TakeoffGoalHandle::SharedPtr & goal_handle);
+    void handle_takeoff_result(const TakeoffGoalHandle::WrappedResult & result);
 
     // Services callbacks
     void onSetGaussian(gaussian_srv::Request::SharedPtr req, gaussian_srv::Response::SharedPtr res);
 
     // Motion
     void publish_velocity(double pos_x, double pos_y, double pos_z, double pos_yaw);
+    nav_msgs::msg::Odometry convert_px4_local_position_to_odometry(const px4_msgs::msg::VehicleLocalPosition & msg) const;
 };
 
 }; //namespace

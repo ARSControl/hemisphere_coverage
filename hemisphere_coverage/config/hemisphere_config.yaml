@@ -7,6 +7,7 @@ hemisphere_coverage:
     minimum_distance: 3.0
     target_distance: 3.0
     velocity_control: true
+    takeoff_altitude: 5.0
     geometric: 1
     vel_control:
       k_gain_x: 0.4

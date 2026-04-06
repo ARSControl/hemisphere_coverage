@@ -4,6 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, EnvironmentVariable
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     # ------------------------------------------------------------
@@ -57,11 +58,6 @@ def generate_launch_description():
         default_value='1',
         description='Geometric parameter'
     )
-    gaussian_arg = DeclareLaunchArgument(
-        'gaussian',
-        default_value='[1,1,1,0.5]',
-        description='Gaussian parameter'
-    )
     sim_arg = DeclareLaunchArgument(
         'simulation',
         default_value='true',
@@ -81,7 +77,6 @@ def generate_launch_description():
     radius = LaunchConfiguration('radius')
     neighbors = LaunchConfiguration('neighbors')
     geometric = LaunchConfiguration('geometric')
-    gaussian = LaunchConfiguration('gaussian')
     use_sim_time_cfg = LaunchConfiguration('use_sim_time')
 
     # ------------------------------------------------------------
@@ -97,14 +92,13 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
-                'use_sim_time': use_sim_time_cfg,
-                'uav_name': uav_name_param,
-                'uav_id': uav_id_param,
-                'deployment': deployment,
-                'radius': radius,
-                'neighbors': neighbors,
-                'geometric': geometric,
-                'gaussian': gaussian
+                'use_sim_time': ParameterValue(use_sim_time_cfg, value_type=bool),
+                'uav_name': ParameterValue(uav_name_param, value_type=str),
+                'uav_id': ParameterValue(uav_id_param, value_type=int),
+                'deployment': ParameterValue(deployment, value_type=str),
+                'radius': ParameterValue(radius, value_type=float),
+                'neighbors': ParameterValue(neighbors, value_type=int),
+                'geometric': ParameterValue(geometric, value_type=int)
             }
         ],
     )
@@ -118,7 +112,6 @@ def generate_launch_description():
     ld.add_action(radius_arg)
     ld.add_action(neighbors_arg)
     ld.add_action(geometric_arg)
-    ld.add_action(gaussian_arg)
     ld.add_action(sim_arg)
     ld.add_action(use_sim_time_arg)
     ld.add_action(hemisphere_coverage_node)
