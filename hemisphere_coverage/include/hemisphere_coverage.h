@@ -21,6 +21,7 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
+#include <state_sharing/msg/shared_state.hpp>
 #include "hemisphere_interfaces/msg/mission_state.hpp"
 #include "autopilot_interface_msgs/action/land.hpp"
 #include "autopilot_interface_msgs/action/takeoff.hpp"
@@ -102,6 +103,7 @@ private:
     std::shared_ptr<nav_msgs::msg::Odometry>    odometry;
     std::map<int, Neighbor>                     neighbors_map;
     std::map<int, std_msgs::msg::Int32>         neighbors_states_map;
+    std::map<int, state_sharing::msg::SharedState> shared_neighbors_map_;
     std::shared_ptr<geometry_msgs::msg::Point>  current_destination;
 
     // ROS Subscription
@@ -110,6 +112,8 @@ private:
     rclcpp::Subscription<hemisphere_interfaces::msg::MissionState>::SharedPtr   sub_neighbors_states;
     std::vector<rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> sub_neighbors;
     std::unordered_map<int, rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> discovered_neighbor_subscribers_;
+    std::vector<rclcpp::Subscription<state_sharing::msg::SharedState>::SharedPtr> sub_shared_neighbors_;
+    std::unordered_map<int, rclcpp::Subscription<state_sharing::msg::SharedState>::SharedPtr> discovered_shared_state_subscribers_;
     std::vector<rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr>          sub_states;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_center;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_angles;
@@ -141,8 +145,10 @@ private:
     void callbackAnglesValues(const geometry_msgs::msg::Point::SharedPtr msg);
     void callbackNeighbors(int index, px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void callbackNeighborsStates(const hemisphere_interfaces::msg::MissionState::SharedPtr& msg);
+    void callbackSharedNeighborState(int index, const state_sharing::msg::SharedState::SharedPtr msg);
     void callbackStates(int index, std_msgs::msg::Int32::SharedPtr msg);
     void discover_neighbor_odometry_topics();
+    void discover_shared_state_topics();
     void start_landing();
     void start_takeoff();
     void handle_landing_goal_response(const LandGoalHandle::SharedPtr & goal_handle);

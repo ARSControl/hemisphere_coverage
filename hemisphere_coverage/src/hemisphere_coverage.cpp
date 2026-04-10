@@ -108,7 +108,10 @@ namespace hemisphere
 
         // Timer
         timer_main                  = create_wall_timer(std::chrono::milliseconds(static_cast<long int>(500)), [this]() { main_timer(); });
-        timer_discover_neighbors_   = create_wall_timer(std::chrono::seconds(2), [this]() { discover_neighbor_odometry_topics(); });
+        timer_discover_neighbors_   = create_wall_timer(std::chrono::seconds(2), [this]() {
+            discover_neighbor_odometry_topics();
+            discover_shared_state_topics();
+        });
     }
 
     void HemisphereCoverage::init_algorithm()
@@ -182,6 +185,15 @@ namespace hemisphere
         neighbors_states_map.insert_or_assign(index, *msg);
     }
 
+    void HemisphereCoverage::callbackSharedNeighborState(int index, const state_sharing::msg::SharedState::SharedPtr msg)
+    {
+        if (index == drone_id) {
+            return;
+        }
+
+        shared_neighbors_map_.insert_or_assign(index, *msg);
+    }
+
     void HemisphereCoverage::discover_neighbor_odometry_topics()
     {
         static const std::regex pattern("^/Drone([0-9]+)/fmu/out/vehicle_local_position$");
@@ -206,6 +218,35 @@ namespace hemisphere
             discovered_neighbor_subscribers_.emplace(neighbor_id, sub_odometry);
             sub_neighbors.push_back(sub_odometry);
             RCLCPP_INFO(get_logger(), "Subscribed to neighbor odometry topic: %s", topic_name.c_str());
+        }
+    }
+
+    void HemisphereCoverage::discover_shared_state_topics()
+    {
+        static const std::regex pattern("^/state_sharing_drone_([0-9]+)$");
+        for (const auto & [topic_name, msg_types] : this->get_topic_names_and_types()) {
+            std::smatch match;
+            if (!std::regex_match(topic_name, match, pattern)) {
+                continue;
+            }
+
+            if (std::find(msg_types.begin(), msg_types.end(), "state_sharing/msg/SharedState") == msg_types.end()) {
+                continue;
+            }
+
+            const int neighbor_id = std::stoi(match[1].str());
+            if (neighbor_id == drone_id || discovered_shared_state_subscribers_.count(neighbor_id) > 0) {
+                continue;
+            }
+
+            auto sub_shared_state = this->create_subscription<state_sharing::msg::SharedState>(
+                    topic_name, 10,
+                    [this, neighbor_id](const state_sharing::msg::SharedState::SharedPtr msg) {
+                        this->callbackSharedNeighborState(neighbor_id, msg);
+                    });
+            discovered_shared_state_subscribers_.emplace(neighbor_id, sub_shared_state);
+            sub_shared_neighbors_.push_back(sub_shared_state);
+            RCLCPP_INFO(get_logger(), "Subscribed to shared neighbor state topic: %s", topic_name.c_str());
         }
     }
 

@@ -20,6 +20,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(hemisphere_interfaces REQUIRED)
 find_package(autopilot_interface_msgs REQUIRED)
+find_package(state_sharing REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE) # Added Eigen3
 find_package(rosidl_default_generators REQUIRED)
 
@@ -49,6 +50,7 @@ set(dependencies
         "tf2_geometry_msgs"
         "hemisphere_interfaces"
         "autopilot_interface_msgs"
+        "state_sharing"
         "rclcpp_action"
         "Eigen3"
 )
