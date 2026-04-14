@@ -10,19 +10,13 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
-find_package(tf2_ros REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
 find_package(hemisphere_interfaces REQUIRED)
-find_package(autopilot_interface_msgs REQUIRED)
-find_package(state_sharing REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE) # Added Eigen3
-find_package(rosidl_default_generators REQUIRED)
 
 # swarm_launch_utils
 
@@ -45,13 +39,8 @@ set(dependencies
         "geometry_msgs"
         "nav_msgs"
         "px4_msgs"
-        "tf2_ros"
         "tf2"
-        "tf2_geometry_msgs"
         "hemisphere_interfaces"
-        "autopilot_interface_msgs"
-        "state_sharing"
-        "rclcpp_action"
         "Eigen3"
 )
 

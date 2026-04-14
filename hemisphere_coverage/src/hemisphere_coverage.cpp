@@ -4,10 +4,15 @@
 
 #include "hemisphere_coverage.h"
 #include <cmath>
+#include <chrono>
 #include <functional>
+#include <future>
+#include <sstream>
 
 namespace hemisphere
 {
+    using namespace std::chrono_literals;
+
     namespace {
         constexpr double HALF_PI = M_PI / 2.0;
 
@@ -27,26 +32,23 @@ namespace hemisphere
         std::cout << " --- NODE READY" << std::endl;
     }
 
+    HemisphereCoverage::~HemisphereCoverage()
+    {
+        send_land_in_place_command();
+    }
+
     void HemisphereCoverage::init_params()
     {
-        int geometric_val, neighbors_val;
+        int geometric_val;
         float kp, ki, kd, max, min;
         double cx, cy, cz;
         std::vector<double> gaussian_val;
 
         namespace sru = hemisphere::node_utils;
         sru::declare_get_parameter<std::string>(*this, "uav_name", uav_name, "Drone1");
-        sru::declare_get_parameter<bool>(*this, "simulation", is_simulation, true);
-        sru::declare_get_parameter<bool>(*this, "velocity_control", velocity_control, 1.0);
         sru::declare_get_parameter<int>(*this, "uav_id", drone_id, 0);
         sru::declare_get_parameter<double>(*this, "radius", radius, 10.0);
-        sru::declare_get_parameter<double>(*this, "takeoff_altitude", takeoff_altitude_, 5.0);
-        sru::declare_get_parameter<double>(*this, "takeoff_retry_period_sec", takeoff_retry_period_sec_, 2.0);
-        sru::declare_get_parameter<double>(*this, "landing_altitude", landing_altitude_, 5.0);
-        sru::declare_get_parameter<double>(*this, "land_retry_period_sec", land_retry_period_sec_, 2.0);
-        sru::declare_get_parameter<double>(*this, "shutdown_landing_timeout_sec", shutdown_landing_timeout_sec_, 30.0);
         sru::declare_get_parameter<int>(*this, "geometric", geometric_val, 1);
-        sru::declare_get_parameter<int>(*this, "neighbors", neighbors_val, 10);
         sru::declare_get_parameter<std::vector<double>>(*this, "gaussian", gaussian_val, {1.0, 1.0, 1.0, 0.5});
         sru::declare_get_parameter<double>(*this, "vel_control.k_gain_x", k_gain_x, 1.0);
         sru::declare_get_parameter<double>(*this, "vel_control.k_gain_y", k_gain_y, 1.0);
@@ -65,52 +67,39 @@ namespace hemisphere
 
         geometric_coverage = (geometric_val == 1);
         gaussian_vec = gaussian_val;
-        neighbors_num = neighbors_val;
 
         hemi_center.x = cx;
         hemi_center.y = cy;
         hemi_center.z = cz;
-        current_state = StateMachine::INIT;
-
     }
 
     void HemisphereCoverage::init_ros()
     {
+        auto px4_qos = rclcpp::QoS(rclcpp::KeepLast(10));
+        px4_qos.best_effort();
+
         // ROS Subs
-        sub_comm    = this->create_subscription<std_msgs::msg::Int32>("/command", 10, std::bind(&HemisphereCoverage::callbackCommand, this, std::placeholders::_1));
         sub_odom    = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-                "fmu/out/vehicle_local_position", 10, std::bind(&HemisphereCoverage::callbackOdometry, this, std::placeholders::_1));
+                "fmu/out/vehicle_local_position", px4_qos, std::bind(&HemisphereCoverage::callbackOdometry, this, std::placeholders::_1));
+        sub_vehicle_status_ = this->create_subscription<vehicle_status_msg>(
+                "fmu/out/vehicle_status", px4_qos, std::bind(&HemisphereCoverage::callbackVehicleStatus, this, std::placeholders::_1));
         sub_center  = this->create_subscription<geometry_msgs::msg::Point>("/" + uav_name + "/center", 1, std::bind(&HemisphereCoverage::callbackCenterPosition, this, std::placeholders::_1));
         sub_angles  = this->create_subscription<geometry_msgs::msg::Point>("/" + uav_name + "/angles", 1, std::bind(&HemisphereCoverage::callbackAnglesValues, this, std::placeholders::_1));
-        
-        // Listen to neighbor mission state (if provided)
-        sub_neighbors_states = this->create_subscription<hemisphere_interfaces::msg::MissionState>(
-                "neighbors_states", 1, [this](hemisphere_interfaces::msg::MissionState::SharedPtr msg) { this->callbackNeighborsStates(msg); });
-
-        // neighbors status
-        for(int i = 1; i <= neighbors_num; i++) {
-            std::string name_ = "/Drone" + std::to_string(i) + "/current_state";
-            auto sub_state = this->create_subscription<std_msgs::msg::Int32>(
-                    name_, 1,
-                    [this, i](const std_msgs::msg::Int32::SharedPtr msg) { this->callbackStates(i, msg); });
-            sub_states.push_back(sub_state);
-        }
 
         // ROS Services
         srv_gaussian                = this->create_service<gaussian_srv>("/" + uav_name + "/setGaussian", [this](gaussian_srv::Request::SharedPtr req, gaussian_srv::Response::SharedPtr res) { onSetGaussian(req, res); });
+        srv_takeoff_                = this->create_service<trigger_srv>("takeoff", [this](trigger_srv::Request::SharedPtr req, trigger_srv::Response::SharedPtr res) { onTakeoff(req, res); });
+        vehicle_command_client_     = this->create_client<vehicle_command_srv>("fmu/vehicle_command");
 
         // ROS Pubs
         pub_vel_acc                 = this->create_publisher<geometry_msgs::msg::TwistStamped>("/" + uav_name + "/command/setVelocityAcceleration", 10);
-        pub_pose                    = this->create_publisher<geometry_msgs::msg::PoseStamped>("/" + uav_name + "/command/setPose", 1);
-        pub_state                   = this->create_publisher<std_msgs::msg::Int32>("/" + uav_name + "/current_state", 1);
-        land_client_                = rclcpp_action::create_client<Land>(this, "land_action");
-        takeoff_client_             = rclcpp_action::create_client<Takeoff>(this, "takeoff_action");
 
         // Timer
         timer_main                  = create_wall_timer(std::chrono::milliseconds(static_cast<long int>(500)), [this]() { main_timer(); });
-        timer_discover_neighbors_   = create_wall_timer(std::chrono::seconds(2), [this]() {
-            discover_neighbor_odometry_topics();
-            discover_shared_state_topics();
+        timer_discover_neighbors_   = create_wall_timer(std::chrono::seconds(2), [this]() { discover_neighbor_odometry_topics(); });
+        timer_auto_takeoff_         = create_wall_timer(1s, [this]() {
+            request_takeoff_sequence("startup");
+            timer_auto_takeoff_->cancel();
         });
     }
 
@@ -132,14 +121,20 @@ namespace hemisphere
     void HemisphereCoverage::callbackOdometry(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
     {
         odometry = std::make_shared<nav_msgs::msg::Odometry>(convert_px4_local_position_to_odometry(*msg));
+
+        if (takeoff_completed_ && !coverage_started_) {
+            coverage_started_ = true;
+            RCLCPP_INFO(
+                    get_logger(),
+                    "Takeoff altitude reached and PX4 local position is available on %s, hemisphere coverage enabled",
+                    sub_odom->get_topic_name());
+        }
     }
 
-    void HemisphereCoverage::callbackCommand(const std_msgs::msg::Int32::SharedPtr msg)
+    void HemisphereCoverage::callbackVehicleStatus(const vehicle_status_msg::SharedPtr msg)
     {
-
-        int command = msg->data;
-        std::cout << "new command received : " << command << std::endl;
-
+        vehicle_status_ = *msg;
+        vehicle_status_received_ = true;
     }
 
     void HemisphereCoverage::callbackCenterPosition(const geometry_msgs::msg::Point::SharedPtr msg) {
@@ -164,13 +159,6 @@ namespace hemisphere
 
     }
 
-    void HemisphereCoverage::callbackNeighborsStates(const hemisphere_interfaces::msg::MissionState::SharedPtr& msg)
-    {
-        std_msgs::msg::Int32 value;
-        value.data = msg->state;
-        neighbors_states_map.insert_or_assign(static_cast<int>(msg->droneid), value);
-    }
-
     void HemisphereCoverage::callbackNeighbors(int index, px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
     {
         if(index == drone_id)
@@ -180,23 +168,12 @@ namespace hemisphere
         neighbors_map.insert_or_assign(index, Neighbor(index, time, convert_px4_local_position_to_odometry(*msg)));
     }
 
-    void HemisphereCoverage::callbackStates(int index, std_msgs::msg::Int32::SharedPtr msg)
-    {
-        neighbors_states_map.insert_or_assign(index, *msg);
-    }
-
-    void HemisphereCoverage::callbackSharedNeighborState(int index, const state_sharing::msg::SharedState::SharedPtr msg)
-    {
-        if (index == drone_id) {
-            return;
-        }
-
-        shared_neighbors_map_.insert_or_assign(index, *msg);
-    }
-
     void HemisphereCoverage::discover_neighbor_odometry_topics()
     {
         static const std::regex pattern("^/Drone([0-9]+)/fmu/out/vehicle_local_position$");
+        auto px4_qos = rclcpp::QoS(rclcpp::KeepLast(10));
+        px4_qos.best_effort();
+
         for (const auto & [topic_name, msg_types] : this->get_topic_names_and_types()) {
             std::smatch match;
             if (!std::regex_match(topic_name, match, pattern)) {
@@ -213,40 +190,11 @@ namespace hemisphere
             }
 
             auto sub_odometry = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-                    topic_name, 1,
+                    topic_name, px4_qos,
                     [this, neighbor_id](const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) { this->callbackNeighbors(neighbor_id, msg); });
             discovered_neighbor_subscribers_.emplace(neighbor_id, sub_odometry);
             sub_neighbors.push_back(sub_odometry);
             RCLCPP_INFO(get_logger(), "Subscribed to neighbor odometry topic: %s", topic_name.c_str());
-        }
-    }
-
-    void HemisphereCoverage::discover_shared_state_topics()
-    {
-        static const std::regex pattern("^/state_sharing_drone_([0-9]+)$");
-        for (const auto & [topic_name, msg_types] : this->get_topic_names_and_types()) {
-            std::smatch match;
-            if (!std::regex_match(topic_name, match, pattern)) {
-                continue;
-            }
-
-            if (std::find(msg_types.begin(), msg_types.end(), "state_sharing/msg/SharedState") == msg_types.end()) {
-                continue;
-            }
-
-            const int neighbor_id = std::stoi(match[1].str());
-            if (neighbor_id == drone_id || discovered_shared_state_subscribers_.count(neighbor_id) > 0) {
-                continue;
-            }
-
-            auto sub_shared_state = this->create_subscription<state_sharing::msg::SharedState>(
-                    topic_name, 10,
-                    [this, neighbor_id](const state_sharing::msg::SharedState::SharedPtr msg) {
-                        this->callbackSharedNeighborState(neighbor_id, msg);
-                    });
-            discovered_shared_state_subscribers_.emplace(neighbor_id, sub_shared_state);
-            sub_shared_neighbors_.push_back(sub_shared_state);
-            RCLCPP_INFO(get_logger(), "Subscribed to shared neighbor state topic: %s", topic_name.c_str());
         }
     }
 
@@ -264,32 +212,74 @@ namespace hemisphere
         std::cout << "GAUSSIAN VALUES set to [" << req->x << ", " << req->y << ", " << req->z << ", " << req->var << "]" << std::endl;
     }
 
+    void HemisphereCoverage::onTakeoff(trigger_srv::Request::SharedPtr, trigger_srv::Response::SharedPtr res)
+    {
+        if (takeoff_completed_) {
+            res->success = true;
+            res->message = "Takeoff already completed";
+            return;
+        }
+
+        request_takeoff_sequence("service");
+        res->success = true;
+        res->message = "Takeoff sequence requested";
+    }
+
     void HemisphereCoverage::main_timer()
     {
-        // Publish current state, used by others to synch
-        std_msgs::msg::Int32 msg_status;
-        msg_status.data = static_cast<int32_t>(current_state);
-        pub_state->publish(msg_status);
-
         if (shutdown_requested_) {
-            start_landing();
+            std::cout << "shutdown_requested_" << std::endl;
             return;
         }
 
         if (!takeoff_completed_) {
-            start_takeoff();
+            std::cout << "! takeoff_completed_" << std::endl;
+            RCLCPP_INFO_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    2000,
+                    "Executing takeoff sequence for %s",
+                    uav_name.c_str());
+            handle_takeoff_sequence();
             return;
         }
 
         if (coverage == nullptr || odometry == nullptr) {
+            std::cout << "! coverage null or odometry null " << std::endl;
             RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     5000,
-                    "Takeoff finished but no PX4 local position has been received yet on %s/fmu/out/vehicle_local_position",
-                    uav_name.c_str());
+                    "Waiting for PX4 local position on %s before enabling hemisphere coverage",
+                    sub_odom->get_topic_name());
             return;
         }
+
+        RCLCPP_INFO_STREAM_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                5000,
+                [&]() {
+                    std::ostringstream stream;
+                    stream << "Neighbors map (converted odometry): ";
+                    if (neighbors_map.empty()) {
+                        stream << "empty";
+                    } else {
+                        bool first = true;
+                        for (const auto & [neighbor_id, neighbor] : neighbors_map) {
+                            if (!first) {
+                                stream << " | ";
+                            }
+                            first = false;
+                            stream << "Drone" << neighbor_id
+                                   << " pos=("
+                                   << neighbor.pos.pose.pose.position.x << ", "
+                                   << neighbor.pos.pose.pose.position.y << ", "
+                                   << neighbor.pos.pose.pose.position.z << ")";
+                        }
+                    }
+                    return stream.str();
+                }());
 
         current_destination = coverage->do_hemisphereCoverage(odometry, neighbors_map);
         
@@ -318,17 +308,8 @@ namespace hemisphere
         }
 
         shutdown_requested_ = true;
-        current_state = StateMachine::INIT;
-        RCLCPP_INFO(get_logger(), "Shutdown requested, stopping coverage pipeline and initiating landing");
-
-        const bool airborne = odometry != nullptr && odometry->pose.pose.position.z > 0.5;
-        if (!takeoff_completed_ && !airborne) {
-            shutdown_sequence_complete_ = true;
-            RCLCPP_INFO(get_logger(), "Shutdown requested before takeoff completed, skipping landing");
-            return;
-        }
-
-        start_landing();
+        shutdown_sequence_complete_ = true;
+        RCLCPP_INFO(get_logger(), "Shutdown requested, stopping coverage pipeline");
     }
 
     bool HemisphereCoverage::shutdown_sequence_complete() const
@@ -338,7 +319,267 @@ namespace hemisphere
 
     double HemisphereCoverage::shutdown_landing_timeout_sec() const
     {
-        return shutdown_landing_timeout_sec_;
+        return 0.0;
+    }
+
+    void HemisphereCoverage::request_takeoff_sequence(const std::string & reason)
+    {
+        if (takeoff_requested_) {
+            return;
+        }
+
+        takeoff_requested_ = true;
+        RCLCPP_INFO(
+                get_logger(),
+                "Takeoff sequence requested for %s via %s, target altitude %.2f m",
+                uav_name.c_str(),
+                reason.c_str(),
+                takeoff_altitude_m_);
+    }
+
+    void HemisphereCoverage::handle_takeoff_sequence()
+    {
+        if (!takeoff_requested_) {
+            return;
+        }
+
+        if (!vehicle_command_client_->wait_for_service(0s)) {
+            RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Waiting for FMU vehicle_command service on %s/fmu/vehicle_command",
+                    uav_name.c_str());
+            return;
+        }
+
+        if (!vehicle_status_received_) {
+            RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Waiting for PX4 vehicle status on %s",
+                    (std::string(get_namespace()) + "/fmu/out/vehicle_status").c_str());
+            return;
+        }
+
+        if (takeoff_altitude_reached()) {
+            takeoff_completed_ = true;
+            RCLCPP_INFO_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Drone is already at or above the takeoff altitude %.2f m, skipping arm/takeoff commands",
+                    takeoff_altitude_m_);
+            return;
+        }
+
+        if (!vehicle_status_.pre_flight_checks_pass) {
+            RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Waiting for PX4 pre-flight checks to pass before takeoff");
+            return;
+        }
+
+        if (vehicle_status_.arming_state != vehicle_status_msg::ARMING_STATE_ARMED) {
+            send_vehicle_command_sync(
+                    vehicle_command_msg::VEHICLE_CMD_COMPONENT_ARM_DISARM,
+                    static_cast<float>(vehicle_command_msg::ARMING_ACTION_ARM),
+                    0.0f,
+                    0.0f,
+                    0.0f,
+                    std::numeric_limits<double>::quiet_NaN(),
+                    std::numeric_limits<double>::quiet_NaN(),
+                    0.0f,
+                    "arm",
+                    last_arm_command_time_);
+            return;
+        }
+
+        if (!takeoff_command_sent_) {
+            takeoff_command_sent_ = send_vehicle_command_sync(
+                    vehicle_command_msg::VEHICLE_CMD_NAV_TAKEOFF,
+                    0.0f,
+                    0.0f,
+                    0.0f,
+                    std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<double>::quiet_NaN(),
+                    std::numeric_limits<double>::quiet_NaN(),
+                    static_cast<float>(takeoff_altitude_m_),
+                    "takeoff",
+                    last_takeoff_command_time_);
+            return;
+        }
+
+        if (last_takeoff_command_time_ != std::chrono::steady_clock::time_point{} &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - last_takeoff_command_time_).count() > takeoff_retry_timeout_sec_ &&
+            vehicle_status_.nav_state != vehicle_status_msg::NAVIGATION_STATE_AUTO_TAKEOFF &&
+            vehicle_status_.takeoff_time == 0 &&
+            !takeoff_altitude_reached()) {
+            takeoff_command_sent_ = false;
+            RCLCPP_WARN(
+                    get_logger(),
+                    "Takeoff command made no visible progress within %.1f s, retrying",
+                    takeoff_retry_timeout_sec_);
+            return;
+        }
+
+        if (odometry == nullptr) {
+            RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    5000,
+                    "Takeoff accepted, waiting for PX4 local position before checking altitude");
+            return;
+        }
+
+        if (!takeoff_altitude_reached()) {
+            RCLCPP_INFO_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Ascending to %.2f m, current altitude %.2f m",
+                    takeoff_altitude_m_,
+                    odometry->pose.pose.position.z);
+            return;
+        }
+
+        takeoff_completed_ = true;
+        RCLCPP_INFO(
+                get_logger(),
+                "Reached takeoff altitude %.2f m for %s",
+                takeoff_altitude_m_,
+                uav_name.c_str());
+    }
+
+    void HemisphereCoverage::send_land_in_place_command()
+    {
+        if (!rclcpp::ok()) {
+            return;
+        }
+
+        if (!vehicle_command_client_) {
+            return;
+        }
+
+        if (!vehicle_status_received_) {
+            RCLCPP_WARN(get_logger(), "Skipping land-in-place command on shutdown because vehicle status was never received");
+            return;
+        }
+
+        if (vehicle_status_.arming_state != vehicle_status_msg::ARMING_STATE_ARMED) {
+            RCLCPP_INFO(get_logger(), "Skipping land-in-place command on shutdown because %s is not armed", uav_name.c_str());
+            return;
+        }
+
+        if (!vehicle_command_client_->wait_for_service(0s)) {
+            RCLCPP_WARN(get_logger(), "Skipping land-in-place command on shutdown because fmu/vehicle_command is unavailable");
+            return;
+        }
+
+        auto request = std::make_shared<vehicle_command_srv::Request>();
+        auto & command_request = request->request;
+        const auto now = this->get_clock()->now();
+
+        command_request.timestamp = static_cast<uint64_t>(now.nanoseconds() / 1000);
+        command_request.command = vehicle_command_msg::VEHICLE_CMD_NAV_LAND;
+        command_request.param1 = 0.0f;
+        command_request.param2 = 0.0f;
+        command_request.param3 = 0.0f;
+        command_request.param4 = std::numeric_limits<float>::quiet_NaN();
+        command_request.param5 = std::numeric_limits<double>::quiet_NaN();
+        command_request.param6 = std::numeric_limits<double>::quiet_NaN();
+        command_request.param7 = std::numeric_limits<float>::quiet_NaN();
+        command_request.target_system = target_system_id();
+        command_request.target_component = 1;
+        command_request.source_system = 255;
+        command_request.source_component = 0;
+        command_request.confirmation = 0;
+        command_request.from_external = true;
+
+        vehicle_command_client_->async_send_request(request);
+        RCLCPP_INFO(get_logger(), "Sent land-in-place command for %s during shutdown", uav_name.c_str());
+     }
+
+    bool HemisphereCoverage::send_vehicle_command_sync(
+            uint32_t command,
+            float param1,
+            float param2,
+            float param3,
+            float param4,
+            double param5,
+            double param6,
+            float param7,
+            const std::string & description,
+            std::chrono::steady_clock::time_point & last_attempt_time)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (last_attempt_time != std::chrono::steady_clock::time_point{} &&
+            std::chrono::duration<double>(now - last_attempt_time).count() < command_retry_period_sec_) {
+            return false;
+        }
+
+        last_attempt_time = now;
+
+        auto request = std::make_shared<vehicle_command_srv::Request>();
+        auto & command_request = request->request;
+        command_request.timestamp = static_cast<uint64_t>(this->get_clock()->now().nanoseconds() / 1000);
+        command_request.command = command;
+        command_request.param1 = param1;
+        command_request.param2 = param2;
+        command_request.param3 = param3;
+        command_request.param4 = param4;
+        command_request.param5 = param5;
+        command_request.param6 = param6;
+        command_request.param7 = param7;
+        command_request.target_system = target_system_id();
+        command_request.target_component = 1;
+        command_request.source_system = 255;
+        command_request.source_component = 0;
+        command_request.confirmation = 0;
+        command_request.from_external = true;
+
+        vehicle_command_client_->async_send_request(
+                request,
+                [this, description](rclcpp::Client<vehicle_command_srv>::SharedFuture future) {
+                    const auto response = future.get();
+                    if (!response) {
+                        RCLCPP_WARN(get_logger(), "FMU %s command returned an empty response", description.c_str());
+                        return;
+                    }
+
+                    const auto & reply = response->reply;
+                    if (reply.result != vehicle_command_ack_msg::VEHICLE_CMD_RESULT_ACCEPTED) {
+                        RCLCPP_WARN(
+                                get_logger(),
+                                "FMU %s command was not accepted (result=%u)",
+                                description.c_str(),
+                                static_cast<unsigned>(reply.result));
+                        return;
+                    }
+
+                    RCLCPP_INFO(get_logger(), "FMU %s command accepted", description.c_str());
+                });
+
+        RCLCPP_INFO(get_logger(), "FMU %s command dispatched", description.c_str());
+        return true;
+    }
+
+    bool HemisphereCoverage::takeoff_altitude_reached() const
+    {
+        return odometry != nullptr &&
+               odometry->pose.pose.position.z >= (takeoff_altitude_m_ - takeoff_altitude_tolerance_m_);
+    }
+
+    uint8_t HemisphereCoverage::target_system_id() const
+    {
+        if (vehicle_status_received_ && vehicle_status_.system_id != 0) {
+            return vehicle_status_.system_id;
+        }
+
+        return drone_id > 0 ? static_cast<uint8_t>(drone_id) : static_cast<uint8_t>(1);
     }
 
     void HemisphereCoverage::publish_velocity(double pos_x, double pos_y, double pos_z, double pos_yaw)
@@ -362,161 +603,6 @@ namespace hemisphere
         twist_msg.twist.angular.z = yaw_output;
 
         pub_vel_acc->publish(twist_msg);
-    }
-
-    void HemisphereCoverage::start_takeoff()
-    {
-        if (takeoff_completed_ || takeoff_goal_sent_) {
-            return;
-        }
-
-        const auto now = this->get_clock()->now();
-        if (last_takeoff_attempt_time_.nanoseconds() > 0 &&
-            (now - last_takeoff_attempt_time_).seconds() < takeoff_retry_period_sec_) {
-            return;
-        }
-
-        if (!takeoff_client_->action_server_is_ready()) {
-            RCLCPP_WARN_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    5000,
-                    "Waiting for takeoff_action server in namespace %s",
-                    get_namespace());
-            return;
-        }
-
-        auto goal = Takeoff::Goal();
-        goal.takeoff_altitude = takeoff_altitude_;
-        goal.vtol_transition_heading = 0.0;
-        goal.vtol_loiter_nord = 0.0;
-        goal.vtol_loiter_east = 0.0;
-        goal.vtol_loiter_alt = takeoff_altitude_;
-
-        rclcpp_action::Client<Takeoff>::SendGoalOptions options;
-        options.goal_response_callback = std::bind(&HemisphereCoverage::handle_takeoff_goal_response, this, std::placeholders::_1);
-        options.result_callback = std::bind(&HemisphereCoverage::handle_takeoff_result, this, std::placeholders::_1);
-
-        takeoff_goal_sent_ = true;
-        takeoff_goal_accepted_ = false;
-        last_takeoff_attempt_time_ = now;
-        RCLCPP_INFO(get_logger(), "Sending takeoff goal to %.2f m", takeoff_altitude_);
-        takeoff_client_->async_send_goal(goal, options);
-    }
-
-    void HemisphereCoverage::start_landing()
-    {
-        if (shutdown_sequence_complete_ || land_goal_sent_) {
-            return;
-        }
-
-        const auto now = this->get_clock()->now();
-        if (last_land_attempt_time_.nanoseconds() > 0 &&
-            (now - last_land_attempt_time_).seconds() < land_retry_period_sec_) {
-            return;
-        }
-
-        if (!land_client_->action_server_is_ready()) {
-            RCLCPP_WARN_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    5000,
-                    "Waiting for land_action server in namespace %s",
-                    get_namespace());
-            return;
-        }
-
-        auto goal = Land::Goal();
-        goal.landing_altitude = landing_altitude_;
-        goal.vtol_transition_heading = 0.0;
-
-        rclcpp_action::Client<Land>::SendGoalOptions options;
-        options.goal_response_callback = std::bind(&HemisphereCoverage::handle_landing_goal_response, this, std::placeholders::_1);
-        options.result_callback = std::bind(&HemisphereCoverage::handle_landing_result, this, std::placeholders::_1);
-
-        land_goal_sent_ = true;
-        land_goal_accepted_ = false;
-        last_land_attempt_time_ = now;
-        RCLCPP_INFO(get_logger(), "Sending landing goal with landing altitude %.2f m", landing_altitude_);
-        land_client_->async_send_goal(goal, options);
-    }
-
-    void HemisphereCoverage::handle_landing_goal_response(const LandGoalHandle::SharedPtr & goal_handle)
-    {
-        if (!goal_handle) {
-            land_goal_sent_ = false;
-            land_goal_accepted_ = false;
-            RCLCPP_WARN(get_logger(), "Landing goal was rejected, will retry");
-            return;
-        }
-
-        land_goal_accepted_ = true;
-        RCLCPP_INFO(get_logger(), "Landing goal accepted");
-    }
-
-    void HemisphereCoverage::handle_landing_result(const LandGoalHandle::WrappedResult & result)
-    {
-        switch (result.code) {
-            case rclcpp_action::ResultCode::SUCCEEDED:
-                shutdown_sequence_complete_ = true;
-                current_state = StateMachine::INIT;
-                RCLCPP_INFO(get_logger(), "Landing completed, shutdown can continue");
-                break;
-            case rclcpp_action::ResultCode::ABORTED:
-                land_goal_sent_ = false;
-                land_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Landing aborted, will retry");
-                break;
-            case rclcpp_action::ResultCode::CANCELED:
-                land_goal_sent_ = false;
-                land_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Landing canceled, will retry");
-                break;
-            default:
-                land_goal_sent_ = false;
-                land_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Landing finished with unknown result, will retry");
-                break;
-        }
-    }
-
-    void HemisphereCoverage::handle_takeoff_goal_response(const TakeoffGoalHandle::SharedPtr & goal_handle)
-    {
-        if (!goal_handle) {
-            takeoff_goal_sent_ = false;
-            takeoff_goal_accepted_ = false;
-            RCLCPP_WARN(get_logger(), "Takeoff goal was rejected, will retry");
-            return;
-        }
-
-        takeoff_goal_accepted_ = true;
-        RCLCPP_INFO(get_logger(), "Takeoff goal accepted");
-    }
-
-    void HemisphereCoverage::handle_takeoff_result(const TakeoffGoalHandle::WrappedResult & result)
-    {
-        switch (result.code) {
-            case rclcpp_action::ResultCode::SUCCEEDED:
-                takeoff_completed_ = true;
-                current_state = StateMachine::HEMISHPERE;
-                RCLCPP_INFO(get_logger(), "Takeoff completed, hemisphere coverage enabled");
-                break;
-            case rclcpp_action::ResultCode::ABORTED:
-                takeoff_goal_sent_ = false;
-                takeoff_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Takeoff aborted, will retry");
-                break;
-            case rclcpp_action::ResultCode::CANCELED:
-                takeoff_goal_sent_ = false;
-                takeoff_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Takeoff canceled, will retry");
-                break;
-            default:
-                takeoff_goal_sent_ = false;
-                takeoff_goal_accepted_ = false;
-                RCLCPP_WARN(get_logger(), "Takeoff finished with unknown result, will retry");
-                break;
-        }
     }
 
     nav_msgs::msg::Odometry HemisphereCoverage::convert_px4_local_position_to_odometry(const px4_msgs::msg::VehicleLocalPosition & msg) const

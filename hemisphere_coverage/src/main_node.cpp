@@ -57,6 +57,7 @@ int main(int argc, char **argv)
 
     executor.cancel();
     executor.remove_node(node);
+    node.reset();
     rclcpp::shutdown();
     return 0;
 }

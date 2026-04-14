@@ -66,13 +66,6 @@ namespace hemisphere
         glm::dvec3 A, B, C;
     };
 
-    enum StateMachine
-    {
-        INIT = 0,
-        HEMISHPERE = 1
-    };
-
-    using state_func = std::function<void(const StateMachine &)>;
     using point_func = std::function<void(const Point &)>;
     using points_func = std::function<void(const std::vector<Point> &)>;
     using sphere_func = std::function<void(const Point &, const double &, const std::tuple<double,double,double,double> &)>;
@@ -93,8 +86,6 @@ namespace hemisphere
         void setAngles(Point angles) { hemi_angles = angles; }
         virtual void setup(double r, hemisphere::coverage::DistributionType t, std::vector<double> g, double tr, Point center) = 0;
 
-        inline void registerChangeInStateCallback(state_func callback) { state_function = callback; }
-
         virtual std::shared_ptr<geometry_msgs::msg::Point> do_hemisphereCoverage(nav_msgs::msg::Odometry::SharedPtr odometry,  std::map<int, Neighbor> neighbors_map) = 0;
 
     protected:
@@ -106,8 +97,6 @@ namespace hemisphere
         std::vector<Point>                      arcs_pts;
         Point                                   hemi_center;
         Point                                   hemi_angles;
-
-        state_func                              state_function;
 
     };
 
