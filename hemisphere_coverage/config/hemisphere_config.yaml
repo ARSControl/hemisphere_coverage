@@ -1,4 +1,4 @@
-hemisphere_coverage:
+/**:
   ros__parameters:
     uav_name: "uav1" # declared as empty but passed and rewritten from env variable in launch file
     uav_id: 3

@@ -71,6 +71,14 @@ namespace hemisphere
         hemi_center.x = cx;
         hemi_center.y = cy;
         hemi_center.z = cz;
+
+        std::cout
+                << "[init-params] " << uav_name
+                << " hemi_center=("
+                << hemi_center.x << ", "
+                << hemi_center.y << ", "
+                << hemi_center.z << ")"
+                << std::endl;
     }
 
     void HemisphereCoverage::init_ros()
@@ -234,7 +242,7 @@ namespace hemisphere
         }
 
         if (!takeoff_completed_) {
-            std::cout << "! takeoff_completed_" << std::endl;
+            // std::cout << "! takeoff_completed_" << std::endl;
             RCLCPP_INFO_THROTTLE(
                     get_logger(),
                     *get_clock(),
