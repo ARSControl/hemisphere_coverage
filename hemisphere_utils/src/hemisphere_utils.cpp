@@ -22,7 +22,7 @@ void HemisphereUtils::main_timer()
 {
     visualization_msgs::msg::Marker marker;
     marker.header.stamp = now();
-    marker.header.frame_id = "map";
+    marker.header.frame_id = "common_origin";
     marker.ns = "hemisphere_utils";
     marker.id = 0;
     marker.type = visualization_msgs::msg::Marker::SPHERE;
@@ -37,7 +37,7 @@ void HemisphereUtils::main_timer()
     marker.color.r = 1.0f;
     marker.color.g = 1.0f;
     marker.color.b = 0.0f;
-    marker.color.a = 0.8f;
+    marker.color.a = 0.3f;
 
     marker_pub_->publish(marker);
 }

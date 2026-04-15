@@ -103,6 +103,7 @@ namespace hemisphere
         // ROS Pubs
         pub_vel_acc                 = this->create_publisher<trajectory_setpoint_msg>("fmu/in/trajectory_setpoint", 10);
         pub_offboard_control_mode_  = this->create_publisher<offboard_control_mode_msg>("fmu/in/offboard_control_mode", 10);
+        pub_arc                     = this->create_publisher<visualization_msgs::msg::Marker>("diagram", 10);
 
         // Timer
         timer_main                  = create_wall_timer(std::chrono::milliseconds(static_cast<long int>(100)), [this]() { main_timer(); });
@@ -119,6 +120,9 @@ namespace hemisphere
         hemisphere::coverage::DistributionType type = geometric_coverage ? hemisphere::coverage::DistributionType::DISTRIBUTION_GEOMETRICAL : hemisphere::coverage::DistributionType::DISTRIBUTION_GAUSSIAN;
         coverage->setAngles(hemi_angles);
         coverage->setup(radius, type, gaussian_vec, 0.0, hemi_center);
+
+        coverage->registerPublishArcRequestCallback([this](const std::vector<Point>& arcs) { callbackPublishArcRequest(arcs); });
+
     }
 
     void HemisphereCoverage::initializePID(float kp, float ki, float kd, float max, float min)
@@ -738,7 +742,7 @@ namespace hemisphere
         setpoint_msg.jerk[2] = nan;
         setpoint_msg.yaw = nan;
 
-        // Mirror convert_ned_odometry_to_enu(): controller commands are generated in the
+        // Incoming odometry is already ENU, while PX4 expects local velocity setpoints in NED.
         // odometry/world frame, while PX4 expects local velocity setpoints in NED.
         setpoint_msg.velocity[0] = static_cast<float>(vel_y);
         setpoint_msg.velocity[1] = static_cast<float>(vel_x);
@@ -750,39 +754,181 @@ namespace hemisphere
 
     nav_msgs::msg::Odometry HemisphereCoverage::convert_ned_odometry_to_enu(const nav_msgs::msg::Odometry & msg) const
     {
-        nav_msgs::msg::Odometry odom_msg = msg;
-
-        // Incoming odometry is NED. Convert it to ENU for the coverage controller.
-        odom_msg.pose.pose.position.x = msg.pose.pose.position.y;
-        odom_msg.pose.pose.position.y = msg.pose.pose.position.x;
-        odom_msg.pose.pose.position.z = -msg.pose.pose.position.z;
-
-        odom_msg.twist.twist.linear.x = msg.twist.twist.linear.y;
-        odom_msg.twist.twist.linear.y = msg.twist.twist.linear.x;
-        odom_msg.twist.twist.linear.z = -msg.twist.twist.linear.z;
-
-        odom_msg.twist.twist.angular.x = msg.twist.twist.angular.y;
-        odom_msg.twist.twist.angular.y = msg.twist.twist.angular.x;
-        odom_msg.twist.twist.angular.z = -msg.twist.twist.angular.z;
-
-        tf2::Quaternion q_ned(
-                msg.pose.pose.orientation.x,
-                msg.pose.pose.orientation.y,
-                msg.pose.pose.orientation.z,
-                msg.pose.pose.orientation.w);
-        const tf2::Matrix3x3 ned_to_enu(
-                0.0, 1.0, 0.0,
-                1.0, 0.0, 0.0,
-                0.0, 0.0, -1.0);
-        const tf2::Matrix3x3 rotation_ned(q_ned);
-        const tf2::Matrix3x3 rotation_enu = ned_to_enu * rotation_ned;
-        tf2::Quaternion q_enu;
-        rotation_enu.getRotation(q_enu);
-        odom_msg.pose.pose.orientation.x = q_enu.x();
-        odom_msg.pose.pose.orientation.y = q_enu.y();
-        odom_msg.pose.pose.orientation.z = q_enu.z();
-        odom_msg.pose.pose.orientation.w = q_enu.w();
-
-        return odom_msg;
+        // /odometry is already ENU for both this drone and neighbors.
+        return msg;
     }
+
+
+    void HemisphereCoverage::callbackPublishArcRequest(const std::vector<Point>& arcs)
+    {
+        //std::cout << "callbackPublishArcRequest called" << std::endl;
+        std::vector<geometry_msgs::msg::Point> arcs_;
+        geometry_msgs::msg::Point pt;
+        for(auto item : arcs) {
+            pt.x = item.x; pt.y = item.y; pt.z = item.z;
+            arcs_.push_back(pt);
+        }
+        this->publishArcs(arcs_, radius);
+    }
+
+    void HemisphereCoverage::publishArcs(std::vector<geometry_msgs::msg::Point> points_, double radius_)
+    {
+        if (points_.size() < 2) {
+            RCLCPP_WARN(this->get_logger(), "Not enough points to generate an arc.");
+            std::cout << "Not enough points to generate an arc " << points_.size() << std::endl;
+            return;
+        }
+
+        //for(auto p_ : points_)
+        //    std::cout << "points of the arc" << p_.x << " " << p_.y << " " << p_.z << std::endl;
+        geometry_msgs::msg::Point sphere_center_;
+        sphere_center_.x = 0.0;
+        sphere_center_.y = 0.0;
+        sphere_center_.z = 0.0;
+
+        // Create and publish arcs
+        // We will use a single LINE_STRIP marker for all arcs by concatenating their points
+        visualization_msgs::msg::Marker arcs_marker;
+        arcs_marker.header.frame_id = "common_origin";
+        arcs_marker.header.stamp = this->get_clock()->now();
+        arcs_marker.ns = "arcs";
+        arcs_marker.id = 1;
+        arcs_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        arcs_marker.action = visualization_msgs::msg::Marker::ADD;
+        arcs_marker.scale.x = 0.05; // Line width
+        arcs_marker.color.a = 1.0;
+        arcs_marker.color.r = 1.0;
+        arcs_marker.color.g = 0.0;
+        arcs_marker.color.b = 0.0;
+
+        // Iterate through point pairs
+        for (size_t i = 0; i < points_.size() - 1; ++i)
+        {
+            geometry_msgs::msg::Point start = normalize_point(points_[i], radius_);
+            geometry_msgs::msg::Point end = normalize_point(points_[i + 1], radius_);
+
+            std::vector<geometry_msgs::msg::Point> arc = generate_arc(start, end, radius_);
+
+            // Append arc points to the marker
+            for (const auto& p : arc)
+            {
+                geometry_msgs::msg::Point p_ = p;
+                Point point = Point(p_.x, p_.y, p_.z);
+                //Point point_rot = point.rotate(-hemi_angles.z);
+                Point point_rot = point.rotate(0.0);
+                Point point_tra = Point(point_rot.x + hemi_center.x, point_rot.y + hemi_center.y, point_rot.z + hemi_center.z);
+//                p_.x = p_.x + hemi_center.x;
+//                p_.y = p_.y + hemi_center.y;
+//                p_.z = p_.z + hemi_center.z;
+                p_.x = point_tra.x;
+                p_.y = point_tra.y;
+                p_.z = point_tra.z;
+                arcs_marker.points.push_back(p_);
+            }
+
+            // Add a duplicate point to separate arcs in LINE_STRIP
+            if (i < points_.size() - 2)
+            {
+                arcs_marker.points.push_back(points_[i + 1]);
+            }
+        }
+        pub_arc->publish(arcs_marker);
+    }
+
+    geometry_msgs::msg::Point HemisphereCoverage::normalize_point(const geometry_msgs::msg::Point& p, double radius_)
+    {
+        geometry_msgs::msg::Point sphere_center_;
+        sphere_center_.x = 0.0;
+        sphere_center_.y = 0.0;
+        sphere_center_.z = 0.0;
+
+        double norm = std::sqrt(
+                (p.x - sphere_center_.x) * (p.x - sphere_center_.x) +
+                (p.y - sphere_center_.y) * (p.y - sphere_center_.y) +
+                (p.z - sphere_center_.z) * (p.z - sphere_center_.z));
+        geometry_msgs::msg::Point normalized_p;
+        if (norm == 0.0)
+        {
+            RCLCPP_WARN(this->get_logger(), "Zero length vector, cannot normalize.");
+            return p;
+        }
+        normalized_p.x = sphere_center_.x + (p.x - sphere_center_.x) * radius_ / norm;
+        normalized_p.y = sphere_center_.y + (p.y - sphere_center_.y) * radius_ / norm;
+        normalized_p.z = sphere_center_.z + (p.z - sphere_center_.z) * radius_ / norm;
+        return normalized_p;
+    }
+
+    std::vector<geometry_msgs::msg::Point> HemisphereCoverage::generate_arc(const geometry_msgs::msg::Point& start, const geometry_msgs::msg::Point& end, double radius_, int num_segments)
+    {
+        geometry_msgs::msg::Point sphere_center_;
+        sphere_center_.x = 0.0;
+        sphere_center_.y = 0.0;
+        sphere_center_.z = 0.0;
+
+        std::vector<geometry_msgs::msg::Point> arc_points;
+
+        // Convert points to vectors relative to sphere center
+        double sx = start.x - sphere_center_.x;
+        double sy = start.y - sphere_center_.y;
+        double sz = start.z - sphere_center_.z;
+
+        double ex = end.x - sphere_center_.x;
+        double ey = end.y - sphere_center_.y;
+        double ez = end.z - sphere_center_.z;
+
+        // Normalize vectors
+        double s_norm = std::sqrt(sx*sx + sy*sy + sz*sz);
+        double e_norm = std::sqrt(ex*ex + ey*ey + ez*ez);
+
+        sx /= s_norm;
+        sy /= s_norm;
+        sz /= s_norm;
+
+        ex /= e_norm;
+        ey /= e_norm;
+        ez /= e_norm;
+
+        // Compute angle between vectors
+        double dot = sx*ex + sy*ey + sz*ez;
+        // Clamp dot product to avoid numerical issues
+        if (dot > 1.0) dot = 1.0;
+        if (dot < -1.0) dot = -1.0;
+        double angle = std::acos(dot);
+
+        // Handle the case where points are the same or opposite
+        if (angle == 0.0)
+        {
+            arc_points.push_back(start);
+            return arc_points;
+        }
+        if (angle == M_PI)
+        {
+            RCLCPP_WARN(this->get_logger(), "Points are antipodal; infinite number of great circles.");
+            arc_points.push_back(start);
+            arc_points.push_back(end);
+            return arc_points;
+        }
+
+        // Generate intermediate points
+        for (int i = 0; i <= num_segments; ++i)
+        {
+            double t = static_cast<double>(i) / num_segments;
+            double sin_angle = std::sin(angle);
+            double factor_start = std::sin((1 - t) * angle) / sin_angle;
+            double factor_end = std::sin(t * angle) / sin_angle;
+
+            double x = sphere_center_.x + radius_ * (factor_start * sx + factor_end * ex);
+            double y = sphere_center_.y + radius_ * (factor_start * sy + factor_end * ey);
+            double z = sphere_center_.z + radius_ * (factor_start * sz + factor_end * ez);
+
+            geometry_msgs::msg::Point p;
+            p.x = x;
+            p.y = y;
+            p.z = z;
+            arc_points.push_back(p);
+        }
+
+        return arc_points;
+    }
+
 }

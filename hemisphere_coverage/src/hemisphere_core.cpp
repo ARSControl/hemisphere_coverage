@@ -116,6 +116,8 @@ namespace hemisphere
 
         getCurrentDiagram(cells, diagram_pts);
 
+        arcs_function(diagram_pts);
+
         // 2. Centroids generation
         if(distribution_type == hemisphere::coverage::DistributionType::DISTRIBUTION_GAUSSIAN) {
             std::cout << "Calculate new gaussian centroid" << std::endl;

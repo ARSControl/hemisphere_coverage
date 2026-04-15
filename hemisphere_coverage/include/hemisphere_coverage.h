@@ -15,6 +15,7 @@
 // Msg
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
@@ -110,6 +111,7 @@ private:
     // ROS Publisher
     rclcpp::Publisher<trajectory_setpoint_msg>::SharedPtr                       pub_vel_acc;
     rclcpp::Publisher<offboard_control_mode_msg>::SharedPtr                     pub_offboard_control_mode_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr               pub_arc;
     //timer
     rclcpp::TimerBase::SharedPtr                                                timer_main;
     rclcpp::TimerBase::SharedPtr                                                timer_discover_neighbors_;
@@ -136,6 +138,7 @@ private:
     void callbackCenterPosition(const geometry_msgs::msg::Point::SharedPtr msg);
     void callbackAnglesValues(const geometry_msgs::msg::Point::SharedPtr msg);
     void callbackNeighbors(int index, nav_msgs::msg::Odometry::SharedPtr msg);
+    void callbackPublishArcRequest(const std::vector<Point> & arcs);
     void discover_neighbor_odometry_topics();
 
     // Services callbacks
@@ -144,7 +147,15 @@ private:
 
     // Motion
     void publish_velocity(double pos_x, double pos_y, double pos_z, double pos_yaw);
+    void publishArcs(std::vector<geometry_msgs::msg::Point> points_, double radius_);
+    void publishDiagramPoints(std::vector<geometry_msgs::msg::Point> points_, double radius_);
     void publish_px4_offboard_velocity_mode() const;
+    geometry_msgs::msg::Point normalize_point(const geometry_msgs::msg::Point & p, double radius_);
+    std::vector<geometry_msgs::msg::Point> generate_arc(
+        const geometry_msgs::msg::Point & start,
+        const geometry_msgs::msg::Point & end,
+        double radius_,
+        int num_segments = 20);
     trajectory_setpoint_msg convert_odometry_velocity_command_to_px4_setpoint(
         double vel_x,
         double vel_y,

@@ -84,6 +84,9 @@ namespace hemisphere
         void setGaussianValues(std::vector<double> g) { gaussian_vec = g; }
         void setCenter(Point center) { hemi_center = center; }
         void setAngles(Point angles) { hemi_angles = angles; }
+
+        inline void registerPublishArcRequestCallback(points_func callback) { arcs_function = callback; };
+
         virtual void setup(double r, hemisphere::coverage::DistributionType t, std::vector<double> g, double tr, Point center) = 0;
 
         virtual std::shared_ptr<geometry_msgs::msg::Point> do_hemisphereCoverage(nav_msgs::msg::Odometry::SharedPtr odometry,  std::map<int, Neighbor> neighbors_map) = 0;
@@ -97,6 +100,8 @@ namespace hemisphere
         std::vector<Point>                      arcs_pts;
         Point                                   hemi_center;
         Point                                   hemi_angles;
+
+        points_func                             arcs_function;
 
     };
 
