@@ -363,14 +363,40 @@ namespace hemisphere
             return;
         }
 
-        if (takeoff_altitude_reached()) {
+        const auto now_steady = std::chrono::steady_clock::now();
+        if (last_takeoff_debug_time_ == std::chrono::steady_clock::time_point{} ||
+            std::chrono::duration<double>(now_steady - last_takeoff_debug_time_).count() >= 2.0) {
+            last_takeoff_debug_time_ = now_steady;
+            const double current_altitude = odometry != nullptr
+                    ? odometry->pose.pose.position.z
+                    : std::numeric_limits<double>::quiet_NaN();
+            std::cout
+                    << "[takeoff-debug] " << uav_name
+                    << " armed=" << (vehicle_status_.arming_state == vehicle_status_msg::ARMING_STATE_ARMED)
+                    << " nav_state=" << static_cast<int>(vehicle_status_.nav_state)
+                    << " takeoff_time=" << vehicle_status_.takeoff_time
+                    << " altitude=" << current_altitude
+                    << " target_reached=" << takeoff_altitude_reached()
+                    << " completion_observed=" << takeoff_completion_observed()
+                    << " command_sent=" << takeoff_command_sent_
+                    << std::endl;
+        }
+
+        if (takeoff_completion_observed()) {
             takeoff_completed_ = true;
-            RCLCPP_INFO_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    5000,
-                    "Drone is already at or above the takeoff altitude %.2f m, skipping arm/takeoff commands",
-                    takeoff_altitude_m_);
+            if (takeoff_altitude_reached()) {
+                RCLCPP_INFO(
+                        get_logger(),
+                        "Reached takeoff altitude %.2f m for %s",
+                        takeoff_altitude_m_,
+                        uav_name.c_str());
+            } else {
+                RCLCPP_INFO(
+                        get_logger(),
+                        "Detected takeoff completion for %s from PX4 state at altitude %.2f m",
+                        uav_name.c_str(),
+                        odometry != nullptr ? odometry->pose.pose.position.z : 0.0);
+            }
             return;
         }
 
@@ -435,23 +461,13 @@ namespace hemisphere
             return;
         }
 
-        if (!takeoff_altitude_reached()) {
-            RCLCPP_INFO_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    1000,
-                    "Ascending to %.2f m, current altitude %.2f m",
-                    takeoff_altitude_m_,
-                    odometry->pose.pose.position.z);
-            return;
-        }
-
-        takeoff_completed_ = true;
-        RCLCPP_INFO(
+        RCLCPP_INFO_THROTTLE(
                 get_logger(),
-                "Reached takeoff altitude %.2f m for %s",
+                *get_clock(),
+                1000,
+                "Ascending to %.2f m, current altitude %.2f m",
                 takeoff_altitude_m_,
-                uav_name.c_str());
+                odometry->pose.pose.position.z);
     }
 
     void HemisphereCoverage::send_land_in_place_command()
@@ -571,6 +587,20 @@ namespace hemisphere
     {
         return odometry != nullptr &&
                odometry->pose.pose.position.z >= (takeoff_altitude_m_ - takeoff_altitude_tolerance_m_);
+    }
+
+    bool HemisphereCoverage::takeoff_completion_observed() const
+    {
+        if (takeoff_altitude_reached()) {
+            return true;
+        }
+
+        return odometry != nullptr &&
+               vehicle_status_received_ &&
+               vehicle_status_.arming_state == vehicle_status_msg::ARMING_STATE_ARMED &&
+               vehicle_status_.takeoff_time != 0 &&
+               vehicle_status_.nav_state != vehicle_status_msg::NAVIGATION_STATE_AUTO_TAKEOFF &&
+               odometry->pose.pose.position.z >= takeoff_completion_min_altitude_m_;
     }
 
     uint8_t HemisphereCoverage::target_system_id() const

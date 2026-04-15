@@ -79,6 +79,7 @@ private:
     double              k_gain_z = 1.0;
     double              takeoff_altitude_m_ = 5.0;
     double              takeoff_altitude_tolerance_m_ = 0.3;
+    double              takeoff_completion_min_altitude_m_ = 1.0;
     double              command_retry_period_sec_ = 2.0;
     double              takeoff_retry_timeout_sec_ = 10.0;
 
@@ -116,6 +117,7 @@ private:
     rclcpp::Client<vehicle_command_srv>::SharedPtr                              vehicle_command_client_;
     std::chrono::steady_clock::time_point                                       last_arm_command_time_{};
     std::chrono::steady_clock::time_point                                       last_takeoff_command_time_{};
+    std::chrono::steady_clock::time_point                                       last_takeoff_debug_time_{};
 
     //methods
     void init_params();
@@ -154,6 +156,7 @@ private:
         const std::string & description,
         std::chrono::steady_clock::time_point & last_attempt_time);
     bool takeoff_altitude_reached() const;
+    bool takeoff_completion_observed() const;
     uint8_t target_system_id() const;
 };
 

@@ -4,6 +4,7 @@
 
 #include <map>
 #include <iostream>
+#include <limits>
 #include "hemisphere_core.hpp"
 
 namespace hemisphere
@@ -46,6 +47,59 @@ namespace hemisphere
         Point odom_rot = odom_tra.rotate(hemi_angles.z);
         sv::IndexedDirection current_dir(glm::dvec3(odom_rot.x, odom_rot.y, odom_rot.z), drone_id);
         pts.push_back(current_dir);
+
+        std::vector<sv::IndexedDirection> unique_pts;
+        constexpr double kMinDirectionNorm = 1e-3;
+        constexpr double kDuplicateDotThreshold = 0.9995;
+
+        for (const auto & pt : pts) {
+            const double norm = glm::length(pt.direction);
+            if (norm < kMinDirectionNorm) {
+                continue;
+            }
+
+            const glm::dvec3 normalized = glm::normalize(pt.direction);
+            bool duplicate = false;
+            for (const auto & existing : unique_pts) {
+                const double existing_norm = glm::length(existing.direction);
+                if (existing_norm < kMinDirectionNorm) {
+                    continue;
+                }
+
+                const glm::dvec3 existing_normalized = glm::normalize(existing.direction);
+                if (glm::dot(normalized, existing_normalized) > kDuplicateDotThreshold) {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate) {
+                unique_pts.emplace_back(normalized * radius, pt.index);
+            }
+        }
+
+        if (unique_pts.size() < 4) {
+            std::cout
+                    << "[coverage-debug] skipping Voronoi: only "
+                    << unique_pts.size()
+                    << " unique agent directions available; need at least 4"
+                    << std::endl;
+            for (const auto & pt : unique_pts) {
+                std::cout
+                        << "[coverage-debug] point idx=" << pt.index
+                        << " dir=(" << pt.direction.x << ", "
+                        << pt.direction.y << ", "
+                        << pt.direction.z << ")"
+                        << std::endl;
+            }
+            geometry_msgs::msg::Point hold_position;
+            hold_position.x = odometry->pose.pose.position.x;
+            hold_position.y = odometry->pose.pose.position.y;
+            hold_position.z = odometry->pose.pose.position.z;
+            return std::make_shared<geometry_msgs::msg::Point>(hold_position);
+        }
+
+        pts = unique_pts;
 
         // 1. Voronoi diagram generation
         sphericalVoronoiCore = sv::SphericalVoronoiCore(pts);
