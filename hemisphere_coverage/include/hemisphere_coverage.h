@@ -15,10 +15,10 @@
 // Msg
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/point.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <px4_msgs/msg/offboard_control_mode.hpp>
+#include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_command_ack.hpp>
-#include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <px4_msgs/srv/vehicle_command.hpp>
 
@@ -52,6 +52,8 @@ class HemisphereCoverage : public rclcpp::Node
     using vehicle_command_srv = px4_msgs::srv::VehicleCommand;
     using vehicle_command_msg = px4_msgs::msg::VehicleCommand;
     using vehicle_command_ack_msg = px4_msgs::msg::VehicleCommandAck;
+    using offboard_control_mode_msg = px4_msgs::msg::OffboardControlMode;
+    using trajectory_setpoint_msg = px4_msgs::msg::TrajectorySetpoint;
     using vehicle_status_msg = px4_msgs::msg::VehicleStatus;
 public:
     HemisphereCoverage();
@@ -99,14 +101,15 @@ private:
     std::shared_ptr<geometry_msgs::msg::Point>  current_destination;
 
     // ROS Subscription
-    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr        sub_odom;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                    sub_odom;
     rclcpp::Subscription<vehicle_status_msg>::SharedPtr                         sub_vehicle_status_;
-    std::vector<rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> sub_neighbors;
-    std::unordered_map<int, rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr> discovered_neighbor_subscribers_;
+    std::vector<rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr>       sub_neighbors;
+    std::unordered_map<int, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> discovered_neighbor_subscribers_;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_center;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr                  sub_angles;
     // ROS Publisher
-    rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr              pub_vel_acc;
+    rclcpp::Publisher<trajectory_setpoint_msg>::SharedPtr                       pub_vel_acc;
+    rclcpp::Publisher<offboard_control_mode_msg>::SharedPtr                     pub_offboard_control_mode_;
     //timer
     rclcpp::TimerBase::SharedPtr                                                timer_main;
     rclcpp::TimerBase::SharedPtr                                                timer_discover_neighbors_;
@@ -116,6 +119,7 @@ private:
     rclcpp::Service<trigger_srv>::SharedPtr                                     srv_takeoff_;
     rclcpp::Client<vehicle_command_srv>::SharedPtr                              vehicle_command_client_;
     std::chrono::steady_clock::time_point                                       last_arm_command_time_{};
+    std::chrono::steady_clock::time_point                                       last_offboard_command_time_{};
     std::chrono::steady_clock::time_point                                       last_takeoff_command_time_{};
     std::chrono::steady_clock::time_point                                       last_takeoff_debug_time_{};
 
@@ -127,11 +131,11 @@ private:
 
     // callbacks
     void main_timer();
-    void callbackOdometry(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
+    void callbackOdometry(const nav_msgs::msg::Odometry::SharedPtr msg);
     void callbackVehicleStatus(const vehicle_status_msg::SharedPtr msg);
     void callbackCenterPosition(const geometry_msgs::msg::Point::SharedPtr msg);
     void callbackAnglesValues(const geometry_msgs::msg::Point::SharedPtr msg);
-    void callbackNeighbors(int index, px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
+    void callbackNeighbors(int index, nav_msgs::msg::Odometry::SharedPtr msg);
     void discover_neighbor_odometry_topics();
 
     // Services callbacks
@@ -140,8 +144,15 @@ private:
 
     // Motion
     void publish_velocity(double pos_x, double pos_y, double pos_z, double pos_yaw);
-    nav_msgs::msg::Odometry convert_px4_local_position_to_odometry(const px4_msgs::msg::VehicleLocalPosition & msg) const;
+    void publish_px4_offboard_velocity_mode() const;
+    trajectory_setpoint_msg convert_odometry_velocity_command_to_px4_setpoint(
+        double vel_x,
+        double vel_y,
+        double vel_z,
+        double yaw_rate) const;
+    nav_msgs::msg::Odometry convert_ned_odometry_to_enu(const nav_msgs::msg::Odometry & msg) const;
     void request_takeoff_sequence(const std::string & reason);
+    void request_offboard_mode();
     void handle_takeoff_sequence();
     void send_land_in_place_command();
     bool send_vehicle_command_sync(

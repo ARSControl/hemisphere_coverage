@@ -77,10 +77,11 @@ namespace hemisphere
     {
         auto px4_qos = rclcpp::QoS(rclcpp::KeepLast(10));
         px4_qos.best_effort();
+        auto odom_qos = rclcpp::SensorDataQoS();
 
         // ROS Subs
-        sub_odom    = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-                "fmu/out/vehicle_local_position", px4_qos, std::bind(&HemisphereCoverage::callbackOdometry, this, std::placeholders::_1));
+        sub_odom    = this->create_subscription<nav_msgs::msg::Odometry>(
+                "odometry", odom_qos, std::bind(&HemisphereCoverage::callbackOdometry, this, std::placeholders::_1));
         sub_vehicle_status_ = this->create_subscription<vehicle_status_msg>(
                 "fmu/out/vehicle_status", px4_qos, std::bind(&HemisphereCoverage::callbackVehicleStatus, this, std::placeholders::_1));
         sub_center  = this->create_subscription<geometry_msgs::msg::Point>("/" + uav_name + "/center", 1, std::bind(&HemisphereCoverage::callbackCenterPosition, this, std::placeholders::_1));
@@ -92,10 +93,11 @@ namespace hemisphere
         vehicle_command_client_     = this->create_client<vehicle_command_srv>("fmu/vehicle_command");
 
         // ROS Pubs
-        pub_vel_acc                 = this->create_publisher<geometry_msgs::msg::TwistStamped>("/" + uav_name + "/command/setVelocityAcceleration", 10);
+        pub_vel_acc                 = this->create_publisher<trajectory_setpoint_msg>("fmu/in/trajectory_setpoint", 10);
+        pub_offboard_control_mode_  = this->create_publisher<offboard_control_mode_msg>("fmu/in/offboard_control_mode", 10);
 
         // Timer
-        timer_main                  = create_wall_timer(std::chrono::milliseconds(static_cast<long int>(500)), [this]() { main_timer(); });
+        timer_main                  = create_wall_timer(std::chrono::milliseconds(static_cast<long int>(100)), [this]() { main_timer(); });
         timer_discover_neighbors_   = create_wall_timer(std::chrono::seconds(2), [this]() { discover_neighbor_odometry_topics(); });
         timer_auto_takeoff_         = create_wall_timer(1s, [this]() {
             request_takeoff_sequence("startup");
@@ -118,15 +120,15 @@ namespace hemisphere
         _pid_yaw_rate.setTimeStep(0.1);
     }
 
-    void HemisphereCoverage::callbackOdometry(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
+    void HemisphereCoverage::callbackOdometry(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
-        odometry = std::make_shared<nav_msgs::msg::Odometry>(convert_px4_local_position_to_odometry(*msg));
+        odometry = std::make_shared<nav_msgs::msg::Odometry>(convert_ned_odometry_to_enu(*msg));
 
         if (takeoff_completed_ && !coverage_started_) {
             coverage_started_ = true;
             RCLCPP_INFO(
                     get_logger(),
-                    "Takeoff altitude reached and PX4 local position is available on %s, hemisphere coverage enabled",
+                    "Takeoff altitude reached and odometry is available on %s, hemisphere coverage enabled",
                     sub_odom->get_topic_name());
         }
     }
@@ -159,20 +161,19 @@ namespace hemisphere
 
     }
 
-    void HemisphereCoverage::callbackNeighbors(int index, px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
+    void HemisphereCoverage::callbackNeighbors(int index, nav_msgs::msg::Odometry::SharedPtr msg)
     {
         if(index == drone_id)
             return;
         
         uint64_t time = this->get_clock()->now().nanoseconds();
-        neighbors_map.insert_or_assign(index, Neighbor(index, time, convert_px4_local_position_to_odometry(*msg)));
+        neighbors_map.insert_or_assign(index, Neighbor(index, time, convert_ned_odometry_to_enu(*msg)));
     }
 
     void HemisphereCoverage::discover_neighbor_odometry_topics()
     {
-        static const std::regex pattern("^/Drone([0-9]+)/fmu/out/vehicle_local_position$");
-        auto px4_qos = rclcpp::QoS(rclcpp::KeepLast(10));
-        px4_qos.best_effort();
+        static const std::regex pattern("^/Drone([0-9]+)/odometry$");
+        auto odom_qos = rclcpp::SensorDataQoS();
 
         for (const auto & [topic_name, msg_types] : this->get_topic_names_and_types()) {
             std::smatch match;
@@ -180,7 +181,7 @@ namespace hemisphere
                 continue;
             }
 
-            if (std::find(msg_types.begin(), msg_types.end(), "px4_msgs/msg/VehicleLocalPosition") == msg_types.end()) {
+            if (std::find(msg_types.begin(), msg_types.end(), "nav_msgs/msg/Odometry") == msg_types.end()) {
                 continue;
             }
 
@@ -189,9 +190,9 @@ namespace hemisphere
                 continue;
             }
 
-            auto sub_odometry = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-                    topic_name, px4_qos,
-                    [this, neighbor_id](const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) { this->callbackNeighbors(neighbor_id, msg); });
+            auto sub_odometry = this->create_subscription<nav_msgs::msg::Odometry>(
+                    topic_name, odom_qos,
+                    [this, neighbor_id](const nav_msgs::msg::Odometry::SharedPtr msg) { this->callbackNeighbors(neighbor_id, msg); });
             discovered_neighbor_subscribers_.emplace(neighbor_id, sub_odometry);
             sub_neighbors.push_back(sub_odometry);
             RCLCPP_INFO(get_logger(), "Subscribed to neighbor odometry topic: %s", topic_name.c_str());
@@ -244,13 +245,20 @@ namespace hemisphere
             return;
         }
 
+        if (!vehicle_status_received_ || vehicle_status_.nav_state != vehicle_status_msg::NAVIGATION_STATE_OFFBOARD) {
+            publish_px4_offboard_velocity_mode();
+            pub_vel_acc->publish(convert_odometry_velocity_command_to_px4_setpoint(0.0, 0.0, 0.0, 0.0));
+            request_offboard_mode();
+            return;
+        }
+
         if (coverage == nullptr || odometry == nullptr) {
             std::cout << "! coverage null or odometry null " << std::endl;
             RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     5000,
-                    "Waiting for PX4 local position on %s before enabling hemisphere coverage",
+                    "Waiting for odometry on %s before enabling hemisphere coverage",
                     sub_odom->get_topic_name());
             return;
         }
@@ -280,6 +288,41 @@ namespace hemisphere
                     }
                     return stream.str();
                 }());
+
+        std::cout
+                << "[odometry-debug] " << uav_name
+                << " self_pos=("
+                << odometry->pose.pose.position.x << ", "
+                << odometry->pose.pose.position.y << ", "
+                << odometry->pose.pose.position.z << ")"
+                << " self_vel=("
+                << odometry->twist.twist.linear.x << ", "
+                << odometry->twist.twist.linear.y << ", "
+                << odometry->twist.twist.linear.z << ")";
+
+        if (neighbors_map.empty()) {
+            std::cout << " neighbors=empty";
+        } else {
+            std::cout << " neighbors=";
+            bool first_neighbor = true;
+            for (const auto & [neighbor_id, neighbor] : neighbors_map) {
+                if (!first_neighbor) {
+                    std::cout << " | ";
+                }
+                first_neighbor = false;
+                std::cout
+                        << "Drone" << neighbor_id
+                        << " pos=("
+                        << neighbor.pos.pose.pose.position.x << ", "
+                        << neighbor.pos.pose.pose.position.y << ", "
+                        << neighbor.pos.pose.pose.position.z << ")"
+                        << " vel=("
+                        << neighbor.pos.twist.twist.linear.x << ", "
+                        << neighbor.pos.twist.twist.linear.y << ", "
+                        << neighbor.pos.twist.twist.linear.z << ")";
+            }
+        }
+        std::cout << std::endl;
 
         current_destination = coverage->do_hemisphereCoverage(odometry, neighbors_map);
         
@@ -335,6 +378,21 @@ namespace hemisphere
                 uav_name.c_str(),
                 reason.c_str(),
                 takeoff_altitude_m_);
+    }
+
+    void HemisphereCoverage::request_offboard_mode()
+    {
+        send_vehicle_command_sync(
+                vehicle_command_msg::VEHICLE_CMD_DO_SET_MODE,
+                1.0f,
+                6.0f,
+                0.0f,
+                0.0f,
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                0.0f,
+                "offboard",
+                last_offboard_command_time_);
     }
 
     void HemisphereCoverage::handle_takeoff_sequence()
@@ -457,7 +515,7 @@ namespace hemisphere
                     get_logger(),
                     *get_clock(),
                     5000,
-                    "Takeoff accepted, waiting for PX4 local position before checking altitude");
+                    "Takeoff accepted, waiting for odometry before checking altitude");
             return;
         }
 
@@ -622,42 +680,100 @@ namespace hemisphere
         err.y = pos_y - odometry->pose.pose.position.y;
         err.z = pos_z - odometry->pose.pose.position.z;
 
-        geometry_msgs::msg::TwistStamped twist_msg;
-        twist_msg.header.stamp = this->now();
-        twist_msg.header.frame_id = uav_name + "/gps_origin";
-        twist_msg.twist.linear.x = err.x * k_gain_x;
-        twist_msg.twist.linear.y = err.y * k_gain_y;
-        twist_msg.twist.linear.z = err.z * k_gain_z;
+        const double vel_x = err.x * k_gain_x;
+        const double vel_y = err.y * k_gain_y;
+        const double vel_z = err.z * k_gain_z;
+        const float yaw_rate = _pid_yaw_rate.compute(pos_yaw, elapsed);
 
-        float yaw_output = _pid_yaw_rate.compute(pos_yaw, elapsed);
-        twist_msg.twist.angular.z = yaw_output;
-
-        pub_vel_acc->publish(twist_msg);
+        publish_px4_offboard_velocity_mode();
+        std::cout
+                << "[velocity-debug] " << uav_name
+                << " controller_vel=(" << vel_x << ", " << vel_y << ", " << vel_z << ")"
+                << " yaw_rate=" << yaw_rate
+                << std::endl;
+        pub_vel_acc->publish(convert_odometry_velocity_command_to_px4_setpoint(vel_x, vel_y, vel_z, yaw_rate));
     }
 
-    nav_msgs::msg::Odometry HemisphereCoverage::convert_px4_local_position_to_odometry(const px4_msgs::msg::VehicleLocalPosition & msg) const
+    void HemisphereCoverage::publish_px4_offboard_velocity_mode() const
     {
-        nav_msgs::msg::Odometry odom_msg;
-        odom_msg.header.stamp = this->now();
-        odom_msg.header.frame_id = "map";
-        odom_msg.child_frame_id = uav_name;
+        offboard_control_mode_msg mode_msg{};
+        mode_msg.timestamp = static_cast<uint64_t>(this->now().nanoseconds() / 1000);
+        mode_msg.position = false;
+        mode_msg.velocity = true;
+        mode_msg.acceleration = false;
+        mode_msg.attitude = false;
+        mode_msg.body_rate = false;
+        mode_msg.thrust_and_torque = false;
+        mode_msg.direct_actuator = false;
 
-        // PX4 local position is NED. Convert to ENU for the coverage controller.
-        odom_msg.pose.pose.position.x = msg.y;
-        odom_msg.pose.pose.position.y = msg.x;
-        odom_msg.pose.pose.position.z = -msg.z;
+        pub_offboard_control_mode_->publish(mode_msg);
+    }
 
-        odom_msg.twist.twist.linear.x = msg.vy;
-        odom_msg.twist.twist.linear.y = msg.vx;
-        odom_msg.twist.twist.linear.z = -msg.vz;
+    HemisphereCoverage::trajectory_setpoint_msg HemisphereCoverage::convert_odometry_velocity_command_to_px4_setpoint(
+            double vel_x,
+            double vel_y,
+            double vel_z,
+            double yaw_rate) const
+    {
+        trajectory_setpoint_msg setpoint_msg{};
+        setpoint_msg.timestamp = static_cast<uint64_t>(this->now().nanoseconds() / 1000);
 
-        const double yaw_enu = normalize_angle(HALF_PI - msg.heading);
-        tf2::Quaternion q;
-        q.setRPY(0.0, 0.0, yaw_enu);
-        odom_msg.pose.pose.orientation.x = q.x();
-        odom_msg.pose.pose.orientation.y = q.y();
-        odom_msg.pose.pose.orientation.z = q.z();
-        odom_msg.pose.pose.orientation.w = q.w();
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        setpoint_msg.position[0] = nan;
+        setpoint_msg.position[1] = nan;
+        setpoint_msg.position[2] = nan;
+        setpoint_msg.acceleration[0] = nan;
+        setpoint_msg.acceleration[1] = nan;
+        setpoint_msg.acceleration[2] = nan;
+        setpoint_msg.jerk[0] = nan;
+        setpoint_msg.jerk[1] = nan;
+        setpoint_msg.jerk[2] = nan;
+        setpoint_msg.yaw = nan;
+
+        // Mirror convert_ned_odometry_to_enu(): controller commands are generated in the
+        // odometry/world frame, while PX4 expects local velocity setpoints in NED.
+        setpoint_msg.velocity[0] = static_cast<float>(vel_y);
+        setpoint_msg.velocity[1] = static_cast<float>(vel_x);
+        setpoint_msg.velocity[2] = static_cast<float>(-vel_z);
+        setpoint_msg.yawspeed = static_cast<float>(-yaw_rate);
+
+        return setpoint_msg;
+    }
+
+    nav_msgs::msg::Odometry HemisphereCoverage::convert_ned_odometry_to_enu(const nav_msgs::msg::Odometry & msg) const
+    {
+        nav_msgs::msg::Odometry odom_msg = msg;
+
+        // Incoming odometry is NED. Convert it to ENU for the coverage controller.
+        odom_msg.pose.pose.position.x = msg.pose.pose.position.y;
+        odom_msg.pose.pose.position.y = msg.pose.pose.position.x;
+        odom_msg.pose.pose.position.z = -msg.pose.pose.position.z;
+
+        odom_msg.twist.twist.linear.x = msg.twist.twist.linear.y;
+        odom_msg.twist.twist.linear.y = msg.twist.twist.linear.x;
+        odom_msg.twist.twist.linear.z = -msg.twist.twist.linear.z;
+
+        odom_msg.twist.twist.angular.x = msg.twist.twist.angular.y;
+        odom_msg.twist.twist.angular.y = msg.twist.twist.angular.x;
+        odom_msg.twist.twist.angular.z = -msg.twist.twist.angular.z;
+
+        tf2::Quaternion q_ned(
+                msg.pose.pose.orientation.x,
+                msg.pose.pose.orientation.y,
+                msg.pose.pose.orientation.z,
+                msg.pose.pose.orientation.w);
+        const tf2::Matrix3x3 ned_to_enu(
+                0.0, 1.0, 0.0,
+                1.0, 0.0, 0.0,
+                0.0, 0.0, -1.0);
+        const tf2::Matrix3x3 rotation_ned(q_ned);
+        const tf2::Matrix3x3 rotation_enu = ned_to_enu * rotation_ned;
+        tf2::Quaternion q_enu;
+        rotation_enu.getRotation(q_enu);
+        odom_msg.pose.pose.orientation.x = q_enu.x();
+        odom_msg.pose.pose.orientation.y = q_enu.y();
+        odom_msg.pose.pose.orientation.z = q_enu.z();
+        odom_msg.pose.pose.orientation.w = q_enu.w();
 
         return odom_msg;
     }

@@ -16,4 +16,4 @@ hemisphere_coverage:
     hemi:
       cx: 0.0
       cy: 0.0
-      cz: 0.0
+      cz: 5.0
