@@ -826,11 +826,6 @@ namespace hemisphere
                 arcs_marker.points.push_back(p_);
             }
 
-            // Add a duplicate point to separate arcs in LINE_STRIP
-            if (i < points_.size() - 2)
-            {
-                arcs_marker.points.push_back(points_[i + 1]);
-            }
         }
         pub_arc->publish(arcs_marker);
     }
