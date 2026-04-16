@@ -11,9 +11,11 @@
 
     <buildtool_depend>ament_cmake</buildtool_depend>
 
+    <depend>nav_msgs</depend>
     <depend>rclcpp</depend>
     <depend>visualization_msgs</depend>
     <depend>vision_msgs</depend>
+    <depend>hemisphere_interfaces</depend>
 
     <exec_depend>launch</exec_depend>
     <exec_depend>launch_ros</exec_depend>

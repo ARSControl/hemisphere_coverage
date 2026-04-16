@@ -6,9 +6,11 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
+find_package(hemisphere_interfaces REQUIRED)
 
 include_directories(include)
 
@@ -17,9 +19,11 @@ add_library(hemisphere_utils_lib
 )
 
 ament_target_dependencies(hemisphere_utils_lib
+        nav_msgs
         rclcpp
         visualization_msgs
         vision_msgs
+        hemisphere_interfaces
 )
 
 add_executable(hemisphere_utils

@@ -219,6 +219,8 @@ namespace hemisphere
             res->message = "Algorithm not initialized. Gaussian NOT set";
             return;
         }
+        geometric_coverage = false;
+        coverage->setDistributionType(hemisphere::coverage::DistributionType::DISTRIBUTION_GAUSSIAN);
         coverage->setGaussianValues(gaussian_vec);
         res->success = true;
         res->message = "GAUSSIAN VALUES set";
