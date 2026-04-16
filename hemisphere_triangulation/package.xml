@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
-    <name>hemisphere_utils</name>
+    <name>hemisphere_triangulation</name>
     <version>1.0.0</version>
-    <description>Standalone hemisphere utilities node</description>
+    <description>Hemisphere triangulation node</description>
 
     <author email="mehdi.belal@tii.ae">Mehdi Belal</author>
     <maintainer email="mehdi.belal@tii.ae">Mehdi Belal</maintainer>
@@ -11,17 +11,13 @@
 
     <buildtool_depend>ament_cmake</buildtool_depend>
 
-    <depend>nav_msgs</depend>
     <depend>rclcpp</depend>
-    <depend>visualization_msgs</depend>
-    <depend>vision_msgs</depend>
-    <depend>hemisphere_interfaces</depend>
 
     <exec_depend>launch</exec_depend>
     <exec_depend>launch_ros</exec_depend>
-    <exec_depend>ament_index_python</exec_depend>
 
     <export>
         <build_type>ament_cmake</build_type>
     </export>
+
 </package>
