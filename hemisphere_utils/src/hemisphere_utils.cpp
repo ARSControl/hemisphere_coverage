@@ -16,9 +16,13 @@ HemisphereUtils::HemisphereUtils(const rclcpp::NodeOptions & options)
     get_parameter_or("hemi.cz", center_z_, 0.0);
 
     marker_pub_ = create_publisher<visualization_msgs::msg::Marker>("sphere", 10);
+    gmm_marker_pub_ = create_publisher<visualization_msgs::msg::Marker>("gmm_markers", 10);
     timer_main_ = create_wall_timer(
             std::chrono::milliseconds(100),
             std::bind(&HemisphereUtils::main_timer, this));
+    timer_gmm_ = create_wall_timer(
+            std::chrono::seconds(3),
+            std::bind(&HemisphereUtils::gmm_timer, this));
     timer_discover_detections_ = create_wall_timer(
             std::chrono::seconds(2),
             [this]() {
@@ -32,18 +36,33 @@ HemisphereUtils::HemisphereUtils(const rclcpp::NodeOptions & options)
 void HemisphereUtils::main_timer()
 {
     visualize_hemisphere();
+    visualize_accumulated_gaussians();
     print_latest_detections();
+    // visualize_gaussian_center(...) is disabled for now; GMM publishing runs in gmm_timer().
+}
 
-    const auto mean_detected_position = computeMeanDetectedPositionOnSphere();
-    if (mean_detected_position.has_value()) {
-        visualize_gaussian_center(*mean_detected_position);
-        sendGaussianToAll(*mean_detected_position, 5.0);
-        RCLCPP_INFO(
-                get_logger(),
-                "mean_detected_position_on_sphere=(%.3f, %.3f, %.3f)",
-                mean_detected_position->x,
-                mean_detected_position->y,
-                mean_detected_position->z);
+void HemisphereUtils::gmm_timer()
+{
+    constexpr double kGaussianVar = 5.0;
+
+    for (const auto & [drone_id, latest_detection] : detections_map_) {
+        const auto odom_it = odometry_map_.find(drone_id);
+        if (odom_it == odometry_map_.end()) {
+            continue;
+        }
+
+        const auto projected_point = projectPointOnSphere(odom_it->second.msg.pose.pose.position);
+        gaussian_msg gaussian;
+        gaussian.x = projected_point.x;
+        gaussian.y = projected_point.y;
+        gaussian.z = projected_point.z;
+        gaussian.var = kGaussianVar;
+        gaussian.amplitude = latest_detection.msg.detections.size() == 1 ? 1.0 : -1.0;
+        appendGaussianIfUnique(gaussian);
+    }
+
+    if (!accumulated_gaussians_.empty()) {
+        sendGaussianToAll(accumulated_gaussians_);
     }
 }
 
@@ -101,6 +120,41 @@ void HemisphereUtils::visualize_hemisphere()
     marker.color.a = 0.3f;
 
     marker_pub_->publish(marker);
+}
+
+void HemisphereUtils::visualize_accumulated_gaussians()
+{
+    for (std::size_t index = 0; index < accumulated_gaussians_.size(); ++index) {
+        const auto & gaussian = accumulated_gaussians_[index];
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.stamp = now();
+        marker.header.frame_id = "common_origin";
+        marker.ns = "gaussian_list";
+        marker.id = static_cast<int32_t>(index);
+        marker.type = visualization_msgs::msg::Marker::SPHERE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.pose.orientation.w = 1.0;
+        marker.pose.position.x = gaussian.x;
+        marker.pose.position.y = gaussian.y;
+        marker.pose.position.z = gaussian.z;
+        marker.scale.x = 0.75;
+        marker.scale.y = 0.75;
+        marker.scale.z = 0.75;
+        marker.color.a = 0.8f;
+
+        if (gaussian.amplitude >= 0.0) {
+            marker.color.r = 1.0f;
+            marker.color.g = 0.2f;
+            marker.color.b = 0.2f;
+        } else {
+            marker.color.r = 0.2f;
+            marker.color.g = 0.4f;
+            marker.color.b = 1.0f;
+        }
+
+        gmm_marker_pub_->publish(marker);
+    }
 }
 
 void HemisphereUtils::visualize_gaussian_center(const geometry_msgs::msg::Point & gaussian_center)
@@ -235,7 +289,7 @@ void HemisphereUtils::callbackOdometry(int drone_id, const nav_msgs::msg::Odomet
         );
 }
 
-void HemisphereUtils::sendGaussianToAll(const geometry_msgs::msg::Point & gaussian_center, double var)
+void HemisphereUtils::sendGaussianToAll(const std::vector<gaussian_msg> & gaussians)
 {
     for (const auto & [drone_id, client] : gaussian_clients_) {
         if (!client || !client->wait_for_service(std::chrono::seconds(0))) {
@@ -243,15 +297,52 @@ void HemisphereUtils::sendGaussianToAll(const geometry_msgs::msg::Point & gaussi
         }
 
         auto request = std::make_shared<gaussian_list_srv::Request>();
-        gaussian_msg gaussian;
-        gaussian.x = gaussian_center.x;
-        gaussian.y = gaussian_center.y;
-        gaussian.z = gaussian_center.z;
-        gaussian.var = var;
-        gaussian.amplitude = 1.0;
-        request->gaussians.push_back(gaussian);
+        request->gaussians = gaussians;
         client->async_send_request(request);
     }
+}
+
+void HemisphereUtils::appendGaussianIfUnique(const gaussian_msg & gaussian)
+{
+    constexpr double kMinDistanceMeters = 1.0;
+    constexpr double kAmplitudeTolerance = 1e-6;
+
+    for (const auto & existing : accumulated_gaussians_) {
+        if (std::abs(existing.amplitude - gaussian.amplitude) > kAmplitudeTolerance) {
+            continue;
+        }
+
+        const double dx = existing.x - gaussian.x;
+        const double dy = existing.y - gaussian.y;
+        const double dz = existing.z - gaussian.z;
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance < kMinDistanceMeters) {
+            return;
+        }
+    }
+
+    accumulated_gaussians_.push_back(gaussian);
+}
+
+geometry_msgs::msg::Point HemisphereUtils::projectPointOnSphere(const geometry_msgs::msg::Point & point) const
+{
+    const double offset_x = point.x - center_x_;
+    const double offset_y = point.y - center_y_;
+    const double offset_z = point.z - center_z_;
+    const double norm = std::sqrt(offset_x * offset_x + offset_y * offset_y + offset_z * offset_z);
+
+    geometry_msgs::msg::Point projected_point;
+    if (norm == 0.0) {
+        projected_point.x = center_x_;
+        projected_point.y = center_y_;
+        projected_point.z = center_z_;
+        return projected_point;
+    }
+
+    projected_point.x = center_x_ + radius_ * offset_x / norm;
+    projected_point.y = center_y_ + radius_ * offset_y / norm;
+    projected_point.z = center_z_ + radius_ * offset_z / norm;
+    return projected_point;
 }
 
 std::optional<geometry_msgs::msg::Point> HemisphereUtils::computeMeanDetectedPositionOnSphere() const

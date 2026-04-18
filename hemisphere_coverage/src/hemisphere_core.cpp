@@ -184,12 +184,38 @@ namespace hemisphere
 
         if (gaussian_vec.empty()) {
             std::cerr << "Gaussian list does not contain any entries." << std::endl;
+            computeNewGeometricCentroid(cells, res_pts);
             return;
         }
 
-        const auto & gaussian = gaussian_vec.front();
-        glm::dvec3 gaussianMean(gaussian.x, gaussian.y, gaussian.z);
-        double sigma = gaussian.var;  // Interpreted as the standard deviation.
+        struct GaussianKernel
+        {
+            glm::dvec3 mean;
+            double sigma;
+            double amplitude;
+        };
+
+        std::vector<GaussianKernel> kernels;
+        kernels.reserve(gaussian_vec.size());
+        for (const auto & gaussian : gaussian_vec) {
+            const glm::dvec3 mean(gaussian.x, gaussian.y, gaussian.z);
+            const double mean_norm = glm::length(mean);
+            if (mean_norm <= std::numeric_limits<double>::epsilon() || gaussian.var <= 0.0) {
+                continue;
+            }
+
+            kernels.push_back(GaussianKernel{
+                glm::normalize(mean),
+                gaussian.var,
+                glm::clamp(gaussian.amplitude, -1.0, 1.0)
+            });
+        }
+
+        if (kernels.empty()) {
+            std::cerr << "Gaussian list does not contain valid entries." << std::endl;
+            computeNewGeometricCentroid(cells, res_pts);
+            return;
+        }
 
         // A resolution parameter for the subdivision of each spherical triangle.
         int resolution = 20;
@@ -225,11 +251,19 @@ namespace hemisphere
                 for (const auto &tri : subTris) {
                     glm::dvec3 triCentroid = glm::normalize(tri.A + tri.B + tri.C);
                     double area = sphericalTriangleArea(glm::normalize(tri.A), glm::normalize(tri.B), glm::normalize(tri.C), radius);
-                    double dotVal = glm::dot(glm::normalize(triCentroid), glm::normalize(gaussianMean));
-                    double theta = acos(glm::clamp(dotVal, -1.0, 1.0)); // in radians
-                    double d2 = (radius * theta) * (radius * theta); // squared geodesic distance
-                    double pdf = exp(-d2 / (2.0 * sigma * sigma));
-                    double weight = pdf * area;
+                    const glm::dvec3 triDirection = glm::normalize(triCentroid);
+
+                    double combined_field = 0.0;
+                    for (const auto & kernel : kernels) {
+                        const double dotVal = glm::dot(triDirection, kernel.mean);
+                        const double theta = acos(glm::clamp(dotVal, -1.0, 1.0)); // in radians
+                        const double d2 = (radius * theta) * (radius * theta); // squared geodesic distance
+                        const double pdf = exp(-d2 / (2.0 * kernel.sigma * kernel.sigma));
+                        combined_field += kernel.amplitude * pdf;
+                    }
+
+                    const double density = exp(combined_field);
+                    double weight = density * area;
                     weightedSum += weight * triCentroid;
                     totalWeight += weight;
                 }

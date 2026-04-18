@@ -39,7 +39,9 @@ private:
     };
 
     void main_timer();
+    void gmm_timer();
     void visualize_hemisphere();
+    void visualize_accumulated_gaussians();
     void visualize_gaussian_center(const geometry_msgs::msg::Point & gaussian_center);
     void print_latest_detections();
     void discover_detection_topics();
@@ -47,7 +49,9 @@ private:
     void discover_gaussian_services();
     void callbackDetection(int drone_id, const vision_msgs::msg::Detection2DArray::SharedPtr msg);
     void callbackOdometry(int drone_id, const nav_msgs::msg::Odometry::SharedPtr msg);
-    void sendGaussianToAll(const geometry_msgs::msg::Point & gaussian_center, double var);
+    void sendGaussianToAll(const std::vector<gaussian_msg> & gaussians);
+    void appendGaussianIfUnique(const gaussian_msg & gaussian);
+    geometry_msgs::msg::Point projectPointOnSphere(const geometry_msgs::msg::Point & point) const;
     std::optional<geometry_msgs::msg::Point> computeMeanDetectedPositionOnSphere() const;
 
     double radius_ = 10.0;
@@ -61,10 +65,13 @@ private:
     std::vector<rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> sub_odometries_;
     std::unordered_map<int, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> discovered_odometry_subscribers_;
     std::unordered_map<int, rclcpp::Client<gaussian_list_srv>::SharedPtr> gaussian_clients_;
+    std::vector<gaussian_msg> accumulated_gaussians_;
     std::chrono::steady_clock::time_point last_detection_print_time_{};
 
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr gmm_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_main_;
+    rclcpp::TimerBase::SharedPtr timer_gmm_;
     rclcpp::TimerBase::SharedPtr timer_discover_detections_;
 };
 
