@@ -66,6 +66,15 @@ namespace hemisphere
         glm::dvec3 A, B, C;
     };
 
+    struct GaussianHemisphere
+    {
+        double x{0.0};
+        double y{0.0};
+        double z{0.0};
+        double var{0.0};
+        double amplitude{1.0};
+    };
+
     using point_func = std::function<void(const Point &)>;
     using points_func = std::function<void(const std::vector<Point> &)>;
     using sphere_func = std::function<void(const Point &, const double &, const std::tuple<double,double,double,double> &)>;
@@ -81,13 +90,13 @@ namespace hemisphere
 
         void setDistributionType(hemisphere::coverage::DistributionType type_) { distribution_type = type_; }
         void setRadius(double r) { radius = r; }
-        void setGaussianValues(std::vector<double> g) { gaussian_vec = g; }
+        void setGaussianValues(const std::vector<GaussianHemisphere> & gaussians) { gaussian_vec = gaussians; }
         void setCenter(Point center) { hemi_center = center; }
         void setAngles(Point angles) { hemi_angles = angles; }
 
         inline void registerPublishArcRequestCallback(points_func callback) { arcs_function = callback; };
 
-        virtual void setup(double r, hemisphere::coverage::DistributionType t, std::vector<double> g, double tr, Point center) = 0;
+        virtual void setup(double r, hemisphere::coverage::DistributionType t, const std::vector<GaussianHemisphere> & g, double tr, Point center) = 0;
 
         virtual std::shared_ptr<geometry_msgs::msg::Point> do_hemisphereCoverage(nav_msgs::msg::Odometry::SharedPtr odometry,  std::map<int, Neighbor> neighbors_map) = 0;
 
@@ -95,7 +104,7 @@ namespace hemisphere
         int                                     drone_id;
         double                                  radius;
         hemisphere::coverage::DistributionType  distribution_type;
-        std::vector<double>                     gaussian_vec;
+        std::vector<GaussianHemisphere>         gaussian_vec;
         std::vector<Point>                      diagram_pts;
         std::vector<Point>                      arcs_pts;
         Point                                   hemi_center;
@@ -115,7 +124,7 @@ namespace hemisphere
     public:
         HemishpereCoverageSweep(int id, std::string config_path) : HemisphereCoverageCore(id, config_path) { }
 
-        void setup(double r, hemisphere::coverage::DistributionType t, std::vector<double> g, double tr, Point center) override;
+        void setup(double r, hemisphere::coverage::DistributionType t, const std::vector<GaussianHemisphere> & g, double tr, Point center) override;
 
         std::shared_ptr<geometry_msgs::msg::Point> do_hemisphereCoverage(nav_msgs::msg::Odometry::SharedPtr odometry,  std::map<int, Neighbor> neighbors_map) override;
 

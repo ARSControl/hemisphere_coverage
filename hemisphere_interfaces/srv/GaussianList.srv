@@ -1,0 +1,6 @@
+# Request
+hemisphere_interfaces/Gaussian[] gaussians
+---
+# Response
+bool success
+string message

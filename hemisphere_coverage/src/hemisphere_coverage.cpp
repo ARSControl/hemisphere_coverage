@@ -66,7 +66,16 @@ namespace hemisphere
         initializePID(kp, ki, kd, max, min);
 
         geometric_coverage = (geometric_val == 1);
-        gaussian_vec = gaussian_val;
+        gaussian_vec.clear();
+        if (gaussian_val.size() >= 4) {
+            gaussian_vec.push_back(GaussianHemisphere{
+                gaussian_val[0],
+                gaussian_val[1],
+                gaussian_val[2],
+                gaussian_val[3],
+                1.0
+            });
+        }
 
         hemi_center.x = cx;
         hemi_center.y = cy;
@@ -96,7 +105,7 @@ namespace hemisphere
         sub_angles  = this->create_subscription<geometry_msgs::msg::Point>("/" + uav_name + "/angles", 1, std::bind(&HemisphereCoverage::callbackAnglesValues, this, std::placeholders::_1));
 
         // ROS Services
-        srv_gaussian                = this->create_service<gaussian_srv>("/" + uav_name + "/setGaussian", [this](gaussian_srv::Request::SharedPtr req, gaussian_srv::Response::SharedPtr res) { onSetGaussian(req, res); });
+        srv_gaussian                = this->create_service<gaussian_list_srv>("/" + uav_name + "/setGaussian", [this](gaussian_list_srv::Request::SharedPtr req, gaussian_list_srv::Response::SharedPtr res) { onSetGaussian(req, res); });
         srv_takeoff_                = this->create_service<trigger_srv>("takeoff", [this](trigger_srv::Request::SharedPtr req, trigger_srv::Response::SharedPtr res) { onTakeoff(req, res); });
         vehicle_command_client_     = this->create_client<vehicle_command_srv>("fmu/vehicle_command");
 
@@ -211,9 +220,26 @@ namespace hemisphere
         }
     }
 
-    void HemisphereCoverage::onSetGaussian(gaussian_srv::Request::SharedPtr req, gaussian_srv::Response::SharedPtr res)
+    void HemisphereCoverage::onSetGaussian(gaussian_list_srv::Request::SharedPtr req, gaussian_list_srv::Response::SharedPtr res)
     {
-        gaussian_vec = {req->x, req->y, req->z, req->var};
+        if (req->gaussians.empty()) {
+            res->success = false;
+            res->message = "Gaussian list is empty";
+            return;
+        }
+
+        gaussian_vec.clear();
+        gaussian_vec.reserve(req->gaussians.size());
+        for (const auto & gaussian : req->gaussians) {
+            gaussian_vec.push_back(GaussianHemisphere{
+                gaussian.x,
+                gaussian.y,
+                gaussian.z,
+                gaussian.var,
+                gaussian.amplitude
+            });
+        }
+
         if (coverage == nullptr) {
             res->success = false;
             res->message = "Algorithm not initialized. Gaussian NOT set";
@@ -224,7 +250,13 @@ namespace hemisphere
         coverage->setGaussianValues(gaussian_vec);
         res->success = true;
         res->message = "GAUSSIAN VALUES set";
-        std::cout << "GAUSSIAN VALUES set to [" << req->x << ", " << req->y << ", " << req->z << ", " << req->var << "]" << std::endl;
+        const auto now = std::chrono::steady_clock::now();
+        if (last_gaussian_log_time_ == std::chrono::steady_clock::time_point{} ||
+            now - last_gaussian_log_time_ >= std::chrono::seconds(5)) {
+            const auto & gaussian = gaussian_vec.front();
+            std::cout << "GAUSSIAN VALUES set to [" << gaussian.x << ", " << gaussian.y << ", " << gaussian.z << ", " << gaussian.var << ", " << gaussian.amplitude << "]" << std::endl;
+            last_gaussian_log_time_ = now;
+        }
     }
 
     void HemisphereCoverage::onTakeoff(trigger_srv::Request::SharedPtr, trigger_srv::Response::SharedPtr res)
@@ -303,40 +335,40 @@ namespace hemisphere
                     return stream.str();
                 }());
 
-        std::cout
-                << "[odometry-debug] " << uav_name
-                << " self_pos=("
-                << odometry->pose.pose.position.x << ", "
-                << odometry->pose.pose.position.y << ", "
-                << odometry->pose.pose.position.z << ")"
-                << " self_vel=("
-                << odometry->twist.twist.linear.x << ", "
-                << odometry->twist.twist.linear.y << ", "
-                << odometry->twist.twist.linear.z << ")";
-
-        if (neighbors_map.empty()) {
-            std::cout << " neighbors=empty";
-        } else {
-            std::cout << " neighbors=";
-            bool first_neighbor = true;
-            for (const auto & [neighbor_id, neighbor] : neighbors_map) {
-                if (!first_neighbor) {
-                    std::cout << " | ";
-                }
-                first_neighbor = false;
-                std::cout
-                        << "Drone" << neighbor_id
-                        << " pos=("
-                        << neighbor.pos.pose.pose.position.x << ", "
-                        << neighbor.pos.pose.pose.position.y << ", "
-                        << neighbor.pos.pose.pose.position.z << ")"
-                        << " vel=("
-                        << neighbor.pos.twist.twist.linear.x << ", "
-                        << neighbor.pos.twist.twist.linear.y << ", "
-                        << neighbor.pos.twist.twist.linear.z << ")";
-            }
-        }
-        std::cout << std::endl;
+//        std::cout
+//                << "[odometry-debug] " << uav_name
+//                << " self_pos=("
+//                << odometry->pose.pose.position.x << ", "
+//                << odometry->pose.pose.position.y << ", "
+//                << odometry->pose.pose.position.z << ")"
+//                << " self_vel=("
+//                << odometry->twist.twist.linear.x << ", "
+//                << odometry->twist.twist.linear.y << ", "
+//                << odometry->twist.twist.linear.z << ")";
+//
+//        if (neighbors_map.empty()) {
+//            std::cout << " neighbors=empty";
+//        } else {
+//            std::cout << " neighbors=";
+//            bool first_neighbor = true;
+//            for (const auto & [neighbor_id, neighbor] : neighbors_map) {
+//                if (!first_neighbor) {
+//                    std::cout << " | ";
+//                }
+//                first_neighbor = false;
+//                std::cout
+//                        << "Drone" << neighbor_id
+//                        << " pos=("
+//                        << neighbor.pos.pose.pose.position.x << ", "
+//                        << neighbor.pos.pose.pose.position.y << ", "
+//                        << neighbor.pos.pose.pose.position.z << ")"
+//                        << " vel=("
+//                        << neighbor.pos.twist.twist.linear.x << ", "
+//                        << neighbor.pos.twist.twist.linear.y << ", "
+//                        << neighbor.pos.twist.twist.linear.z << ")";
+//            }
+//        }
+//        std::cout << std::endl;
 
         current_destination = coverage->do_hemisphereCoverage(odometry, neighbors_map);
         
@@ -700,11 +732,11 @@ namespace hemisphere
         const float yaw_rate = _pid_yaw_rate.compute(pos_yaw, elapsed);
 
         publish_px4_offboard_velocity_mode();
-        std::cout
-                << "[velocity-debug] " << uav_name
-                << " controller_vel=(" << vel_x << ", " << vel_y << ", " << vel_z << ")"
-                << " yaw_rate=" << yaw_rate
-                << std::endl;
+//        std::cout
+//                << "[velocity-debug] " << uav_name
+//                << " controller_vel=(" << vel_x << ", " << vel_y << ", " << vel_z << ")"
+//                << " yaw_rate=" << yaw_rate
+//                << std::endl;
         pub_vel_acc->publish(convert_odometry_velocity_command_to_px4_setpoint(vel_x, vel_y, vel_z, yaw_rate));
     }
 

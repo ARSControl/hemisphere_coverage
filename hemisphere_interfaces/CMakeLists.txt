@@ -10,7 +10,9 @@ find_package(rosidl_default_generators REQUIRED)
 
 # Generate messages
 rosidl_generate_interfaces(${PROJECT_NAME}
+        "msg/Gaussian.msg"
         "srv/Gaussian.srv"
+        "srv/GaussianList.srv"
         "msg/MissionState.msg"
 
         DEPENDENCIES

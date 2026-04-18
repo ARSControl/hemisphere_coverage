@@ -4,7 +4,8 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
-#include <hemisphere_interfaces/srv/gaussian.hpp>
+#include <hemisphere_interfaces/msg/gaussian.hpp>
+#include <hemisphere_interfaces/srv/gaussian_list.hpp>
 
 #include <cstdint>
 #include <chrono>
@@ -22,7 +23,8 @@ public:
     explicit HemisphereUtils(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-    using gaussian_srv = hemisphere_interfaces::srv::Gaussian;
+    using gaussian_msg = hemisphere_interfaces::msg::Gaussian;
+    using gaussian_list_srv = hemisphere_interfaces::srv::GaussianList;
 
     struct LatestDetection
     {
@@ -58,7 +60,7 @@ private:
     std::unordered_map<int, rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr> discovered_detection_subscribers_;
     std::vector<rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> sub_odometries_;
     std::unordered_map<int, rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr> discovered_odometry_subscribers_;
-    std::unordered_map<int, rclcpp::Client<gaussian_srv>::SharedPtr> gaussian_clients_;
+    std::unordered_map<int, rclcpp::Client<gaussian_list_srv>::SharedPtr> gaussian_clients_;
     std::chrono::steady_clock::time_point last_detection_print_time_{};
 
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;

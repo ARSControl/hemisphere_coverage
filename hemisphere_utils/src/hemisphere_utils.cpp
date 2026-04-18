@@ -199,7 +199,7 @@ void HemisphereUtils::discover_gaussian_services()
             continue;
         }
 
-        if (std::find(service_types.begin(), service_types.end(), "hemisphere_interfaces/srv/Gaussian") == service_types.end()) {
+        if (std::find(service_types.begin(), service_types.end(), "hemisphere_interfaces/srv/GaussianList") == service_types.end()) {
             continue;
         }
 
@@ -208,7 +208,7 @@ void HemisphereUtils::discover_gaussian_services()
             continue;
         }
 
-        gaussian_clients_.emplace(drone_id, create_client<gaussian_srv>(service_name));
+        gaussian_clients_.emplace(drone_id, create_client<gaussian_list_srv>(service_name));
         RCLCPP_INFO(get_logger(), "Discovered Gaussian service: %s", service_name.c_str());
     }
 }
@@ -242,11 +242,14 @@ void HemisphereUtils::sendGaussianToAll(const geometry_msgs::msg::Point & gaussi
             continue;
         }
 
-        auto request = std::make_shared<gaussian_srv::Request>();
-        request->x = gaussian_center.x;
-        request->y = gaussian_center.y;
-        request->z = gaussian_center.z;
-        request->var = var;
+        auto request = std::make_shared<gaussian_list_srv::Request>();
+        gaussian_msg gaussian;
+        gaussian.x = gaussian_center.x;
+        gaussian.y = gaussian_center.y;
+        gaussian.z = gaussian_center.z;
+        gaussian.var = var;
+        gaussian.amplitude = 1.0;
+        request->gaussians.push_back(gaussian);
         client->async_send_request(request);
     }
 }

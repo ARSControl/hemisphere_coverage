@@ -12,7 +12,7 @@ namespace hemisphere
     //
     // HemishpereCoverageSweep
     //
-    void HemishpereCoverageSweep::setup(double r, hemisphere::coverage::DistributionType t, std::vector<double> g, double /*tr*/, Point center)
+    void HemishpereCoverageSweep::setup(double r, hemisphere::coverage::DistributionType t, const std::vector<GaussianHemisphere> & g, double /*tr*/, Point center)
     {
         distribution_type = t;
         setRadius(r);
@@ -182,14 +182,14 @@ namespace hemisphere
     {
         res_pts.clear();
 
-        // Check that the gaussian_vec has at least {x, y, z, sigma}
-        if (gaussian_vec.size() < 4) {
-            std::cerr << "Gaussian vector does not contain enough parameters." << std::endl;
+        if (gaussian_vec.empty()) {
+            std::cerr << "Gaussian list does not contain any entries." << std::endl;
             return;
         }
-        // Gaussian center (in 3D) and its standard deviation.
-        glm::dvec3 gaussianMean(gaussian_vec[0], gaussian_vec[1], gaussian_vec[2]);
-        double sigma = gaussian_vec[3];  // Interpreted as the standard deviation.
+
+        const auto & gaussian = gaussian_vec.front();
+        glm::dvec3 gaussianMean(gaussian.x, gaussian.y, gaussian.z);
+        double sigma = gaussian.var;  // Interpreted as the standard deviation.
 
         // A resolution parameter for the subdivision of each spherical triangle.
         int resolution = 20;

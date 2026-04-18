@@ -26,7 +26,7 @@
 
 //Srv
 #include <std_srvs/srv/trigger.hpp>
-#include "hemisphere_interfaces/srv/gaussian.hpp"
+#include "hemisphere_interfaces/srv/gaussian_list.hpp"
 
 // Timing
 #include <utils/elapsed_timer.hpp>
@@ -48,7 +48,7 @@ namespace hemisphere
 
 class HemisphereCoverage : public rclcpp::Node
 {
-    using gaussian_srv = hemisphere_interfaces::srv::Gaussian;
+    using gaussian_list_srv = hemisphere_interfaces::srv::GaussianList;
     using trigger_srv = std_srvs::srv::Trigger;
     using vehicle_command_srv = px4_msgs::srv::VehicleCommand;
     using vehicle_command_msg = px4_msgs::msg::VehicleCommand;
@@ -68,7 +68,7 @@ private:
     std::string         uav_name = "Drone1";
     double              radius = 5.0;
     int                 drone_id = 0;
-    std::vector<double> gaussian_vec;
+    std::vector<GaussianHemisphere> gaussian_vec;
     bool                geometric_coverage = true;
     bool                shutdown_requested_ = false;
     bool                shutdown_sequence_complete_ = false;
@@ -117,13 +117,14 @@ private:
     rclcpp::TimerBase::SharedPtr                                                timer_discover_neighbors_;
     rclcpp::TimerBase::SharedPtr                                                timer_auto_takeoff_;
     // Services
-    rclcpp::Service<gaussian_srv>::SharedPtr                                    srv_gaussian;
+    rclcpp::Service<gaussian_list_srv>::SharedPtr                               srv_gaussian;
     rclcpp::Service<trigger_srv>::SharedPtr                                     srv_takeoff_;
     rclcpp::Client<vehicle_command_srv>::SharedPtr                              vehicle_command_client_;
     std::chrono::steady_clock::time_point                                       last_arm_command_time_{};
     std::chrono::steady_clock::time_point                                       last_offboard_command_time_{};
     std::chrono::steady_clock::time_point                                       last_takeoff_command_time_{};
     std::chrono::steady_clock::time_point                                       last_takeoff_debug_time_{};
+    std::chrono::steady_clock::time_point                                       last_gaussian_log_time_{};
 
     //methods
     void init_params();
@@ -142,7 +143,7 @@ private:
     void discover_neighbor_odometry_topics();
 
     // Services callbacks
-    void onSetGaussian(gaussian_srv::Request::SharedPtr req, gaussian_srv::Response::SharedPtr res);
+    void onSetGaussian(gaussian_list_srv::Request::SharedPtr req, gaussian_list_srv::Response::SharedPtr res);
     void onTakeoff(trigger_srv::Request::SharedPtr req, trigger_srv::Response::SharedPtr res);
 
     // Motion
