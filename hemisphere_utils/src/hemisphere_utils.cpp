@@ -43,7 +43,7 @@ void HemisphereUtils::main_timer()
 
 void HemisphereUtils::gmm_timer()
 {
-    constexpr double kGaussianVar = 5.0;
+    constexpr double kGaussianVar = 15.0;
 
     for (const auto & [drone_id, latest_detection] : detections_map_) {
         const auto odom_it = odometry_map_.find(drone_id);
